@@ -1,0 +1,25 @@
+syntax = "proto3";
+package gfs.common;
+
+option go_package = "gfs/proto/common";
+
+message ChunkHandle {
+    string handle = 1;
+}
+
+message ChunkLocation {
+    string server_id = 1;
+    string address = 2;
+    int32 port = 3;
+}
+
+message Status {
+    enum Code {
+        OK = 0;
+        ERROR = 1;
+        NOT_FOUND = 2;
+        ALREADY_EXISTS = 3;
+    }
+    Code code = 1;
+    string message = 2;
+}

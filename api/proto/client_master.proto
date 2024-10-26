@@ -1,0 +1,49 @@
+syntax = "proto3";
+package gfs.client_master;
+
+option go_package = "gfs/proto/client_master";
+
+import "api/proto/common.proto";
+
+service ClientMasterService {
+    rpc GetFileChunksInfo(GetFileChunksInfoRequest) returns (GetFileChunksInfoResponse) {}
+    rpc CreateFile(CreateFileRequest) returns (CreateFileResponse) {}
+    rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {}
+}
+
+message ChunkInfo {
+    common.ChunkHandle chunk_handle = 1;
+    common.ChunkLocation primary_location = 2;
+    repeated common.ChunkLocation secondary_locations = 3;
+}
+
+message GetFileChunksInfoRequest {
+    string filename = 1;
+    /*
+        Start and end chunk indices (inclusive)
+        This will save communication overhead b/w client and master
+    */
+    int64 start_chunk = 2;
+    int64 end_chunk = 3;
+}
+
+message GetFileChunksInfoResponse {
+    common.Status status = 1;
+    map<int64, ChunkInfo> chunks = 2;
+}
+
+message CreateFileRequest {
+    string filename = 1;
+}
+
+message CreateFileResponse {
+    common.Status status = 1;
+}
+
+message DeleteFileRequest {
+    string filename = 1;
+}
+
+message DeleteFileResponse {
+    common.Status status = 1;
+}
