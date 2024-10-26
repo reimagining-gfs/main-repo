@@ -1,28 +1,123 @@
 ---
-  server:
-    host: "localhost"
-    port: 5000
-    max_connections: 100
+# General Configuration
 
-  chunk:
-    # [TODO] https://github.com/Mitanshk01/GFS-Distributed-Systems/issues/1
-    # Chunk size in bytes (1 MB = 1048576 bytes)
-    size: 1048576
-    # Maximum number of chunks per server
-    max_chunks: 1000
-    # Directory to store chunk data
-    storage_path: "/var/lib/mini-gfs/chunks"
-    naming_pattern: "chunk_{id}"
+server:
+  # Server network configuration
+  host: "localhost"
+  port: 5000
+  max_connections: 100
+  # Connection timeout in seconds
+  connection_timeout: 30
+  # Maximum request size in bytes (default: 100MB)
+  max_request_size: 104857600
+  # Server thread pool size
+  thread_pool_size: 50
+  # Enable SSL/TLS
+  enable_ssl: false
+  # SSL certificate paths (required if SSL is enabled) -- we'll keep it disabled for now
+  ssl_cert_path: ""
+  ssl_key_path: ""
 
-  replication:
-    factor: 3
-    timeout: 30
-    # Minimum number of successful replicas required
-    min_success: 2
+chunk_definition:
+  # [TODO] https://github.com/Mitanshk01/GFS-Distributed-Systems/issues/1
+  # Core chunk specifications and properties
+  
+  # Chunk size in bytes (1 MB = 1048576 bytes)
+  # Larger chunks reduce metadata overhead but may impact load balancing
+  size: 1048576
+  
+  # Pattern for chunk file naming
+  naming_pattern: "chunk_{id}"
+  
+  # Chunk versioning settings
+  enable_versioning: true
+  max_versions: 5
+  
+  # Chunk verification
+  checksum_algorithm: "sha256"
+  verify_on_read: true
+  
+  # [TODO] Compression settings per chunk - simple addition (one line) if would like to do it
+  enable_compression: false
 
-  health:
-    # In seconds
-    check_interval: 10
-    timeout: 5
-    # Maximum consecutive failures before marking chunk-server as down
-    max_failures: 3
+chunk_server:
+  # Chunk server specific configurations
+  
+  # Maximum number of chunks per server
+  # Limits storage usage on each chunk server
+  max_chunks: 1000
+  
+  # Directory to store chunk data
+  # Ensure this directory has sufficient permissions and storage
+  storage_path: "/var/lib/mini-gfs/chunks"
+  
+  # [TODO] Check validity of whether we really require these I/O settings
+  io:
+    read_buffer_size: 65536
+    write_buffer_size: 65536
+    max_concurrent_reads: 1000
+    max_concurrent_writes: 100
+    
+  # Network settings
+  # [TODO] We'll keep these as a last todo for now
+  network:
+      # Keeps TCP connections alive by sending periodic checks
+      # Prevents firewalls/NATs from dropping idle connections
+      tcp_keepalive: true
+      
+      # Maximum bandwidth limit per chunk server
+      # Prevents a single server from saturating network resources
+      max_bandwidth_mbps: 1000
+
+replication:
+  # Number of replicas for each chunk
+  factor: 3
+  
+  # Timeout for replication operations in seconds
+  timeout: 30
+  
+  # Minimum number of successful replicas required for write operations
+  # [TODO] Should we skip this and require 3? It'll simplify our implementation
+  min_success: 2
+  
+  # Replication strategy: "rack-aware" or "random"
+  strategy: "rack-aware"
+  
+  # Auto-rebalancing settings
+  # [TODO] Treat this as later todo
+  enable_rebalancing: true
+  rebalance_threshold: 0.2  # Trigger rebalancing when utilization difference > 20%
+  rebalance_interval: 3600  # Rebalance check interval in seconds
+
+health:
+  # Health check configuration
+  
+  # Interval between health checks in seconds
+  check_interval: 10
+  
+  # Timeout for health check responses in seconds
+  timeout: 5
+  
+  # Maximum consecutive failures before marking chunk-server as down
+  max_failures: 3
+  
+  # Recovery settings
+  auto_recovery: true
+  recovery_timeout: 300
+
+# Metadata server configuration
+# [TODO] @mitansh check these out
+metadata:
+  # Database settings for metadata storage
+  database:
+    type: "sqlite"  # or "mysql", "postgresql"
+    path: "/var/lib/mini-gfs/metadata.db"
+    backup_interval: 3600
+  
+  # Namespace settings
+  max_filename_length: 255
+  max_directory_depth: 64
+  
+  # Metadata cache settings
+  cache_size_mb: 512
+  cache_ttl_seconds: 1800
