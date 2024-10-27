@@ -1,9 +1,9 @@
 syntax = "proto3";
 package gfs.chunk_master;
 
-option go_package = "gfs/proto/chunk_master";
+option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master";
 
-import "api/proto/common.proto";
+import "api/proto/common/common.proto";
 
 service ChunkMasterService {
     // Used when chunk-server starts up, chunk-server reports all chunks stored

@@ -1,7 +1,7 @@
 syntax = "proto3";
 package gfs.common;
 
-option go_package = "gfs/proto/common";
+option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common";
 
 message ChunkHandle {
     string handle = 1;

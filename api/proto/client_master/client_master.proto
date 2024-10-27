@@ -1,9 +1,9 @@
 syntax = "proto3";
 package gfs.client_master;
 
-option go_package = "gfs/proto/client_master";
+option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/client_master";
 
-import "api/proto/common.proto";
+import "api/proto/common/common.proto";
 
 service ClientMasterService {
     rpc GetFileChunksInfo(GetFileChunksInfoRequest) returns (GetFileChunksInfoResponse) {}
