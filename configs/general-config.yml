@@ -3,26 +3,59 @@
     host: "localhost"
     port: 5000
     max_connections: 100
+    connection_timeout: 30
+    # Maximum request size in bytes (default: 100MB)
+    max_request_size: 104857600
+    # Server thread pool size
+    thread_pool_size: 50
 
   chunk:
     # [TODO] https://github.com/Mitanshk01/GFS-Distributed-Systems/issues/1
     # Chunk size in bytes (1 MB = 1048576 bytes)
     size: 1048576
-    # Maximum number of chunks per server
-    max_chunks: 1000
-    # Directory to store chunk data
-    storage_path: "/var/lib/mini-gfs/chunks"
+    
     naming_pattern: "chunk_{id}"
 
-  replication:
-    factor: 3
-    timeout: 30
-    # Minimum number of successful replicas required
-    min_success: 2
+    # Chunk verification
+    checksum_algorithm: "sha256"
+    verify_on_read: true
 
+  chunk_server:
+    max_chunks: 1000
+  
+    # Directory to store chunk data
+    # Ensure this directory has sufficient permissions and storage
+    storage_path: "../storage/chunks"
+
+  replication:
+    # Number of replicas for each chunk
+    factor: 3
+    
+    # Timeout for replication operations in seconds
+    timeout: 30
+
+  # Health check configuration
   health:
-    # In seconds
-    check_interval: 10
+    # Interval between health checks(heart-beat) in seconds
+    heartbeat_timeout: 10
+    
+    # Timeout for health check responses in seconds
     timeout: 5
+    
     # Maximum consecutive failures before marking chunk-server as down
     max_failures: 3
+
+  metadata:
+    database:
+      type: "json"  # or "mysql", "postgresql"
+      path: "../storage/metadata.json"
+      backup_interval: 180
+    
+    # Namespace settings
+    max_filename_length: 255
+    max_directory_depth: 64
+
+  # Lease settings
+  lease:
+    # Duration of leases in seconds
+    lease_timeout: 60

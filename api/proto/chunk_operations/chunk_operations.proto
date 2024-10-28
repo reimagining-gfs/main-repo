@@ -1,9 +1,9 @@
 syntax = "proto3";
 package gfs.chunk_operations;
 
-option go_package = "gfs/proto/chunk_operations";
+option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations";
 
-import "api/proto/common.proto";
+import "api/proto/common/common.proto";
 
 service ChunkOperationService {
     rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse) {}
