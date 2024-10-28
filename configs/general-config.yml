@@ -1,14 +1,4 @@
 ---
-  server:
-    host: "localhost"
-    port: 5000
-    max_connections: 100
-    connection_timeout: 30
-    # Maximum request size in bytes (default: 100MB)
-    max_request_size: 104857600
-    # Server thread pool size
-    thread_pool_size: 50
-
   chunk:
     # [TODO] https://github.com/Mitanshk01/GFS-Distributed-Systems/issues/1
     # Chunk size in bytes (1 MB = 1048576 bytes)
@@ -25,19 +15,18 @@
   
     # Directory to store chunk data
     # Ensure this directory has sufficient permissions and storage
-    storage_path: "../storage/chunks"
+    storage_path: "../../storage/chunks"
 
-  replication:
-    # Number of replicas for each chunk
-    factor: 3
-    
-    # Timeout for replication operations in seconds
-    timeout: 30
+  deletion:
+    g_c_interval: 180
+    retention_period: 300
+    g_c_delete_batch_size: 100
+    trash_dir_prefix: "/.trash/"
 
   # Health check configuration
   health:
     # Interval between health checks(heart-beat) in seconds
-    heartbeat_timeout: 10
+    check_interval: 10
     
     # Timeout for health check responses in seconds
     timeout: 5
@@ -48,7 +37,7 @@
   metadata:
     database:
       type: "json"  # or "mysql", "postgresql"
-      path: "../storage/metadata.json"
+      path: "../../storage/metadata.json"
       backup_interval: 180
     
     # Namespace settings
@@ -59,3 +48,20 @@
   lease:
     # Duration of leases in seconds
     lease_timeout: 60
+
+  replication:
+    # Number of replicas for each chunk
+    factor: 3
+    
+    # Timeout for replication operations in seconds
+    timeout: 30
+
+  server:
+    host: "localhost"
+    port: 5000
+    max_connections: 100
+    connection_timeout: 30
+    # Maximum request size in bytes (default: 100MB)
+    max_request_size: 104857600
+    # Server thread pool size
+    thread_pool_size: 50
