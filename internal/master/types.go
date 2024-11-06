@@ -5,7 +5,7 @@ import (
     "time"
 
 	"google.golang.org/grpc"
-	client_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/client_master"
+    client_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/client_master"
     chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
 )
 
@@ -55,10 +55,6 @@ type Master struct {
     // Server management
     servers map[string]*ServerInfo  // server_id -> server info
     serversMu sync.RWMutex
-
-    // For generating unique IDs
-    nextChunkHandle int64
-    handleMu sync.Mutex
 
     // Chunk server manager
     chunkServerMgr *ChunkServerManager

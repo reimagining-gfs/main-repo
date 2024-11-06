@@ -41,7 +41,7 @@ func (m *Master) assignNewPrimary(chunkHandle string) error {
     for serverId := range chunkInfo.Locations {
         if server, exists := m.servers[serverId]; exists {
             server.mu.RLock()
-            if server.Status == "ACTIVE" && server.ActiveOps < 100 { // Threshold for active operations
+            if server.Status == "ACTIVE" && server.ActiveOps < 100 { 
                 availableServers = append(availableServers, serverId)
             }
             server.mu.RUnlock()
@@ -526,4 +526,42 @@ func validatePath(filepath string) bool {
     }
     
     return true
+}
+
+func (s *MasterServer) selectInitialChunkServers() []string {
+    const desiredReplicas = 3 // Configurable number of replicas
+
+    s.Master.serversMu.RLock()
+    defer s.Master.serversMu.RUnlock()
+
+    type serverLoad struct {
+        id       string
+        activeOps int32
+    }
+    
+    // Collect all active servers
+    var activeServers []serverLoad
+    for serverId, server := range s.Master.servers {
+        server.mu.RLock()
+        if server.Status == "ACTIVE" {
+            activeServers = append(activeServers, serverLoad{
+                id:        serverId,
+                activeOps: server.ActiveOps,
+            })
+        }
+        server.mu.RUnlock()
+    }
+
+    // Sort servers by load (activeOps)
+    sort.Slice(activeServers, func(i, j int) bool {
+        return activeServers[i].activeOps < activeServers[j].activeOps
+    })
+
+    // Select the least loaded servers up to desiredReplicas
+    selectedServers := make([]string, 0, desiredReplicas)
+    for i := 0; i < len(activeServers) && i < desiredReplicas; i++ {
+        selectedServers = append(selectedServers, activeServers[i].id)
+    }
+
+    return selectedServers
 }
