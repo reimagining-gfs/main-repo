@@ -529,7 +529,7 @@ func validatePath(filepath string) bool {
 }
 
 func (s *MasterServer) selectInitialChunkServers() []string {
-    const desiredReplicas = 3 // Configurable number of replicas
+    var desiredReplicas = s.Master.Config.Replication.Factor
 
     s.Master.serversMu.RLock()
     defer s.Master.serversMu.RUnlock()

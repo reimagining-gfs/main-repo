@@ -146,32 +146,6 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
         }, nil
     }
 
-    // Verify the server is still active
-    s.Master.serversMu.RLock()
-    serverInfo, serverExists := s.Master.servers[req.ServerId]
-    if !serverExists || serverInfo.Status != "ACTIVE" {
-        s.Master.serversMu.RUnlock()
-        return &chunk_pb.RequestLeaseResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: "server is not active",
-            },
-            Granted: false,
-        }, nil
-    }
-    s.Master.serversMu.RUnlock()
-
-    // Check if server still has the chunk
-    if _, hasChunk := chunkInfo.Locations[req.ServerId]; !hasChunk {
-        return &chunk_pb.RequestLeaseResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: "server no longer holds chunk data",
-            },
-            Granted: false,
-        }, nil
-    }
-
     // Extend the lease
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(s.Master.Config.Lease.LeaseTimeout) * time.Second)
 
