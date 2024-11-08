@@ -587,6 +587,64 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
         assert.Equal(t, common.Status_ERROR, resp.Status.Code)
         assert.Equal(t, ErrInvalidChunkRange.Error(), resp.Status.Message)
     })
+    
+    t.Run("New chunk handle creation and replication verification", func(t *testing.T) {
+        filename := "new_chunks.txt"
+
+        
+        for _, server := range masterServer.Master.servers {
+            server.Status = "ACTIVE"
+        }
+
+        // Add file to master but don't initialize the chunk info
+        addFileToMaster(masterServer.Master, filename, []string{})
+        
+        // Request chunk info which should trigger replication
+        req := &client_pb.GetFileChunksInfoRequest{
+            Filename:   filename,
+            StartChunk: 0,
+            EndChunk:   0,
+        }
+
+        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
+        
+        // Verify the response
+        assert.NoError(t, err)
+        assert.Equal(t, common.Status_OK, resp.Status.Code)
+        assert.Equal(t, 1, len(resp.Chunks))
+
+        // Get the chunk info from response - resp.Chunks is a map[int64]*ChunkInfo
+        responseChunk, exists := resp.Chunks[0]  // get chunk at index 0
+        assert.True(t, exists, "Chunk at index 0 should exist")
+        
+        // Verify that a primary was assigned
+        assert.NotNil(t, responseChunk.PrimaryLocation)
+        assert.NotEmpty(t, responseChunk.PrimaryLocation.ServerId)
+        
+        // Verify that we have secondary locations
+        assert.NotEmpty(t, responseChunk.SecondaryLocations)
+        assert.GreaterOrEqual(t, len(responseChunk.SecondaryLocations), 1, "Should have at least one secondary location")
+
+        // Verify that the primary is not in secondary locations
+        primaryID := responseChunk.PrimaryLocation.ServerId
+        for _, loc := range responseChunk.SecondaryLocations {
+            assert.NotEqual(t, primaryID, loc.ServerId, "Primary should not be in secondary locations")
+        }
+
+        // Verify the chunk info was properly updated in the master
+        masterServer.Master.filesMu.RLock()
+        fileInfo := masterServer.Master.files[filename]
+        fileInfo.mu.RLock()
+        chunkHandle := fileInfo.Chunks[0]  // Get the first chunk's handle
+        fileInfo.mu.RUnlock()
+        masterServer.Master.filesMu.RUnlock()
+        masterServer.Master.chunksMu.Lock()
+        updatedChunk := masterServer.Master.chunks[chunkHandle]
+        assert.NotEmpty(t, updatedChunk.Primary, "Chunk should have a primary assigned")
+        assert.NotEmpty(t, updatedChunk.Locations, "Chunk should have locations assigned")
+        assert.Greater(t, updatedChunk.LeaseExpiration.Unix(), time.Now().Unix(), "Lease should be set in the future")
+        masterServer.Master.chunksMu.Unlock()
+    })
 }
 
 func TestMasterServer_CreateFile(t *testing.T) {

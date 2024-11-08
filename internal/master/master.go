@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
     "net"
+    "sync"
 	"time"
 
+    "github.com/google/uuid"
     "google.golang.org/grpc"
     "google.golang.org/grpc/codes"
     "google.golang.org/grpc/status"
@@ -273,8 +275,7 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
     s.Master.filesMu.RUnlock()
 
     // Validate chunk range
-    numChunks := int64(len(fileInfo.Chunks))
-    if req.StartChunk < 0 || req.EndChunk >= numChunks || req.StartChunk > req.EndChunk {
+    if req.StartChunk < 0 || req.StartChunk > req.EndChunk {
         return &client_pb.GetFileChunksInfoResponse{
             Status: &common_pb.Status{
                 Code:    common_pb.Status_ERROR,
@@ -282,6 +283,49 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             },
         }, nil
     }
+
+    s.Master.filesMu.Lock()
+    for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
+        if idx >= int64(len(fileInfo.Chunks)) {
+            // Generate new chunk handle using UUID
+            chunkHandle := uuid.New().String()
+            fileInfo.Chunks[idx] = chunkHandle 
+            
+            s.Master.chunksMu.Lock()
+            // Create new chunk info
+            s.Master.chunks[chunkHandle] = &ChunkInfo{
+                mu:        sync.RWMutex{},
+                Locations: make(map[string]bool),
+            }
+            
+            // Select initial servers for this chunk
+            selectedServers := s.selectInitialChunkServers()
+            if len(selectedServers) > 0 {
+                // Assign the first server as primary with a lease
+                chunkInfo := s.Master.chunks[chunkHandle]
+                chunkInfo.mu.Lock()
+                chunkInfo.Primary = selectedServers[0]
+                chunkInfo.LeaseExpiration = time.Now().Add(time.Minute * 5) // 5-minute lease
+                
+                // Add all selected servers to locations
+                for _, serverId := range selectedServers {
+                    chunkInfo.Locations[serverId] = true
+                }
+                chunkInfo.mu.Unlock()
+            }
+            s.Master.chunksMu.Unlock()
+            
+            replicationDone := make(chan struct{})
+            go func() {
+                s.Master.initiateReplication(chunkHandle)
+                close(replicationDone)
+            }()
+            
+            // Wait for replication to complete
+            <-replicationDone
+        }
+    }
+    s.Master.filesMu.Unlock()
 
     // Gather chunk information
     chunks := make(map[int64]*client_pb.ChunkInfo)

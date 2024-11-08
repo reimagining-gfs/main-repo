@@ -20,7 +20,6 @@ func (m *Master) LoadMetadata(path string) error {
     var metadata struct {
         Files           map[string]*FileInfo
         Chunks          map[string]*ChunkInfo
-        NextChunkHandle int64
     }
 
     if err := json.Unmarshal(data, &metadata); err != nil {
@@ -34,7 +33,6 @@ func (m *Master) LoadMetadata(path string) error {
 
     m.files = metadata.Files
     m.chunks = metadata.Chunks
-    m.nextChunkHandle = metadata.NextChunkHandle
 
     return nil
 }
@@ -50,11 +48,9 @@ func (m *Master) SaveMetadata(path string) error {
     metadata := struct {
         Files map[string]*FileInfo
         Chunks map[string]*ChunkInfo
-        NextChunkHandle int64
     }{
         Files: m.files,
         Chunks: m.chunks,
-        NextChunkHandle: m.nextChunkHandle,
     }
 
     data, err := json.Marshal(metadata)
