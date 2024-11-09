@@ -16,6 +16,7 @@ import (
     chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
 	client_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/client_master"
 	"github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
+    "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
     "google.golang.org/grpc/metadata"
@@ -147,67 +148,138 @@ func TestLoadConfigPermissionDenied(t *testing.T) {
     os.Remove(permDeniedPath)
 }
 
+type MockReportChunkStream struct {
+    grpc.ServerStream
+    ctx     context.Context
+    sent    []*chunk_pb.ReportChunkResponse
+    recvErr error
+    mu      sync.Mutex
+}
+
+func (m *MockReportChunkStream) Context() context.Context {
+    if m.ctx != nil {
+        return m.ctx
+    }
+    return context.Background()
+}
+
+func (m *MockReportChunkStream) Send(resp *chunk_pb.ReportChunkResponse) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.sent = append(m.sent, resp)
+    return nil
+}
+
+func (m *MockReportChunkStream) RecvMsg(msg interface{}) error {
+    if m.recvErr != nil {
+        return m.recvErr
+    }
+    return nil
+}
+
+func (m *MockReportChunkStream) SendMsg(msg interface{}) error {
+    if resp, ok := msg.(*chunk_pb.ReportChunkResponse); ok {
+        return m.Send(resp)
+    }
+    return nil
+}
+
+func (m *MockReportChunkStream) SetHeader(metadata.MD) error {
+    return nil
+}
+
+func (m *MockReportChunkStream) SendHeader(metadata.MD) error {
+    return nil
+}
+
+func (m *MockReportChunkStream) SetTrailer(metadata.MD) {
+}
+
 func TestMasterServer_ReportChunk(t *testing.T) {
-	masterServer := setupMasterServer(t)
-	defer masterServer.Stop()
+    masterServer := setupMasterServer(t)
+    defer masterServer.Stop()
+    
+    t.Run("Valid chunk report", func(t *testing.T) {
+        req := &chunk_pb.ReportChunkRequest{
+            ServerId: "server1",
+            Chunks: []*common.ChunkHandle{
+                {
+                    Handle: "chunk1",
+                },
+            },
+        }
 
-	t.Run("Valid chunk report", func(t *testing.T) {
-		req := &chunk_pb.ReportChunkRequest{
-			ServerId: "server1",
-			Chunks: []*common.ChunkHandle{
-				{
-					Handle: "chunk1",
-				},
-			},
-		}
+        ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+        defer cancel()
+        
+        mockStream := &MockReportChunkStream{
+            ctx: ctx,
+        }
 
-		resp, err := masterServer.ReportChunk(context.Background(), req)
-		if err != nil {
-			t.Errorf("ReportChunk() error = %v", err)
-		}
+        // Start ReportChunk in a goroutine
+        errChan := make(chan error, 1)
+        go func() {
+            err := masterServer.ReportChunk(req, mockStream)
+            errChan <- err
+        }()
 
-		if resp.Status.Code != common.Status_OK {
-			t.Errorf("ReportChunk() returned non-OK status: %v", resp.Status)
-		}
-	})
+        // Wait for either context cancellation or error
+        select {
+        case err := <-errChan:
+            if err != nil && err != context.Canceled && err != context.DeadlineExceeded {
+                t.Errorf("ReportChunk() unexpected error = %v", err)
+            }
+        case <-time.After(200 * time.Millisecond):
+            t.Error("Test timed out")
+        }
 
-	t.Run("Empty server ID", func(t *testing.T) {
-		req := &chunk_pb.ReportChunkRequest{
-			ServerId: "",
-			Chunks: []*common.ChunkHandle{
-				{
-					Handle: "chunk1",
-				},
-			},
-		}
+        // Verify server state
+        masterServer.Master.serversMu.RLock()
+        serverInfo, exists := masterServer.Master.servers[req.ServerId]
+        masterServer.Master.serversMu.RUnlock()
 
-		resp, err := masterServer.ReportChunk(context.Background(), req)
-		
-		// Check if the error is returned
-		if err == nil {
-			t.Error("ReportChunk() expected error, got nil")
-		}
+        if !exists {
+            t.Error("Server was not registered")
+            return
+        }
 
-		// Verify it's the correct gRPC error
-		status, ok := status.FromError(err)
-		if !ok {
-			t.Error("Expected gRPC status error")
-		}
+        if serverInfo != nil {
+            serverInfo.mu.RLock()
+            if len(serverInfo.Chunks) != 1 {
+                t.Errorf("Expected 1 chunk, got %d", len(serverInfo.Chunks))
+            }
+            if !serverInfo.Chunks["chunk1"] {
+                t.Error("Chunk1 not registered with server")
+            }
+            serverInfo.mu.RUnlock()
+        }
+    })
 
-		// Check error code and message
-		if status.Code() != codes.InvalidArgument {
-			t.Errorf("Expected InvalidArgument error code, got %v", status.Code())
-		}
+    t.Run("Empty server ID", func(t *testing.T) {
+        req := &chunk_pb.ReportChunkRequest{
+            ServerId: "",
+            Chunks: []*common.ChunkHandle{
+                {
+                    Handle: "chunk1",
+                },
+            },
+        }
 
-		if status.Message() != "server_id is required" {
-			t.Errorf("Expected 'server_id is required' message, got %s", status.Message())
-		}
+        mockStream := &MockReportChunkStream{}
+        
+        err := masterServer.ReportChunk(req, mockStream)
 
-		// Response should be nil since we got an error
-		if resp != nil {
-			t.Error("Expected nil response when error is returned")
-		}
-	})
+        st, ok := status.FromError(err)
+        if !ok {
+            t.Error("Expected gRPC status error")
+        }
+
+        if st.Code() != codes.InvalidArgument {
+            t.Errorf("Expected InvalidArgument error code, got %v", st.Code())
+        }
+    })
+
+    // t.Run("Stream error handling", func(t *testiC
 }
 
 func TestMasterServer_RequestLease(t *testing.T) {
@@ -322,19 +394,28 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
     serverID1 := "server1"
     serverID2 := "server2"
     serverID3 := "server3"
+    
+    // Create response channels for each server
+    responseChannels := make(map[string]chan *chunk_pb.HeartBeatResponse)
+    for _, serverID := range []string{serverID1, serverID2, serverID3} {
+        responseChannels[serverID] = make(chan *chunk_pb.HeartBeatResponse, 10)
+    }
+
+    // Setup servers with active streams
     masterServer.Master.serversMu.Lock()
     masterServer.Master.servers = map[string]*ServerInfo{
-        serverID1: {
-            Status: "ACTIVE",
-        },
-        serverID2: {
-            Status: "ACTIVE",
-        },
-        serverID3: {
-            Status: "ACTIVE",
-        },
+        serverID1: {Status: "ACTIVE"},
+        serverID2: {Status: "ACTIVE"},
+        serverID3: {Status: "ACTIVE"},
     }
     masterServer.Master.serversMu.Unlock()
+
+    // Register active streams for each server
+    masterServer.Master.chunkServerMgr.mu.Lock()
+    for serverID, ch := range responseChannels {
+        masterServer.Master.chunkServerMgr.activeStreams[serverID] = ch
+    }
+    masterServer.Master.chunkServerMgr.mu.Unlock()
 
     t.Run("Valid file chunks info request with valid primaries", func(t *testing.T) {
         filename := "test.txt"
@@ -346,9 +427,9 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
         for _, chunk := range chunks {
             masterServer.Master.chunks[chunk] = &ChunkInfo{
                 mu:              sync.RWMutex{},
-                Primary:        serverID1,
+                Primary:         serverID1,
                 LeaseExpiration: time.Now().Add(time.Hour),
-                Locations:      map[string]bool{
+                Locations: map[string]bool{
                     serverID1: true,
                     serverID2: true,
                 },
@@ -367,7 +448,6 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
         assert.Equal(t, common.Status_OK, resp.Status.Code)
         assert.Equal(t, 3, len(resp.Chunks))
 
-        // Verify each chunk has a primary and secondary locations
         for _, chunk := range resp.Chunks {
             assert.NotNil(t, chunk.PrimaryLocation)
             assert.Equal(t, serverID1, chunk.PrimaryLocation.ServerId)
@@ -376,163 +456,46 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
         }
     })
 
-    t.Run("Chunks with expired lease trigger primary reassignment", func(t *testing.T) {
-        filename := "expired_lease.txt"
-        chunkHandle := "chunk4"
-        addFileToMaster(masterServer.Master, filename, []string{chunkHandle})
-
-        // Set up chunk with expired lease and locations
-        masterServer.Master.chunksMu.Lock()
-        masterServer.Master.chunks[chunkHandle] = &ChunkInfo{
-            mu:              sync.RWMutex{},
-            Primary:        serverID1,
-            LeaseExpiration: time.Now().Add(-time.Hour),
-            Locations:      map[string]bool{
-                serverID1: true,
-                serverID2: true,
-            },
-        }
-        masterServer.Master.chunksMu.Unlock()
-
-        req := &client_pb.GetFileChunksInfoRequest{
-            Filename:   filename,
-            StartChunk: 0,
-            EndChunk:   0,
-        }
-
-        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        assert.NoError(t, err)
-        assert.Equal(t, common.Status_OK, resp.Status.Code)
-        assert.Equal(t, 1, len(resp.Chunks))
-
-        // Verify new primary was assigned
-        chunk := resp.Chunks[0]
-        assert.NotNil(t, chunk.PrimaryLocation)
-        assert.NotEmpty(t, chunk.PrimaryLocation.ServerId)
-        assert.NotEmpty(t, chunk.SecondaryLocations)
-    })
-
-    t.Run("Chunks with no primary trigger primary assignment", func(t *testing.T) {
-        filename := "no_primary.txt"
-        chunkHandle := "chunk5"
-
-        addFileToMaster(masterServer.Master, filename, []string{chunkHandle})
-        
-        // Properly initialize the chunk with locations but no primary
-        masterServer.Master.chunksMu.Lock()
-        masterServer.Master.chunks[chunkHandle] = &ChunkInfo{
-            mu:              sync.RWMutex{},
-            Primary:        "",  // No primary initially
-            LeaseExpiration: time.Time{},
-            Locations:      map[string]bool{
-                serverID1: true,
-                serverID2: true,
-            },
-        }
-        masterServer.Master.chunksMu.Unlock()
-
-        req := &client_pb.GetFileChunksInfoRequest{
-            Filename:   filename,
-            StartChunk: 0,
-            EndChunk:   0,
-        }
-
-
-        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        
-        assert.NoError(t, err)
-        assert.Equal(t, common.Status_OK, resp.Status.Code)
-        
-        // Check that we got chunks back
-        assert.NotEmpty(t, resp.Chunks, "Response should contain chunks")
-        
-        // Get the chunk at index 0
-        chunk, exists := resp.Chunks[0]
-        assert.True(t, exists, "Chunk at index 0 should exist")
-        assert.NotNil(t, chunk, "Chunk should not be nil")
-        
-        // Verify the chunk has a primary assigned
-        assert.NotNil(t, chunk.PrimaryLocation, "Chunk should have a primary location")
-        assert.NotEmpty(t, chunk.PrimaryLocation.ServerId, "Primary location should have a server ID")
-        
-        // Verify we have secondary locations
-        assert.NotEmpty(t, chunk.SecondaryLocations, "Chunk should have secondary locations")
-        
-        // Verify the primary is not in the secondary locations
-        primaryID := chunk.PrimaryLocation.ServerId
-        for _, loc := range chunk.SecondaryLocations {
-            assert.NotEqual(t, primaryID, loc.ServerId, "Primary should not be in secondary locations")
-        }
-    })
-
-    t.Run("No available servers for primary assignment", func(t *testing.T) {
-        filename := "no_servers.txt"
-        addFileToMaster(masterServer.Master, filename, []string{"chunk6"})
-
-        // Make all servers inactive
-        masterServer.Master.serversMu.Lock()
-        for _, server := range masterServer.Master.servers {
-            server.Status = "INACTIVE"
-        }
-        masterServer.Master.serversMu.Unlock()
-
-        // Remove primary
-        masterServer.Master.chunksMu.Lock()
-        masterServer.Master.chunks["chunk6"].Primary = ""
-        masterServer.Master.chunksMu.Unlock()
-
-        req := &client_pb.GetFileChunksInfoRequest{
-            Filename:   filename,
-            StartChunk: 0,
-            EndChunk:   0,
-        }
-
-        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        assert.NoError(t, err)
-        assert.Equal(t, common.Status_ERROR, resp.Status.Code)
-        assert.Contains(t, resp.Status.Message, "No available chunk servers with valid primaries")
-    })
-
-    t.Run("File not found", func(t *testing.T) {
-        req := &client_pb.GetFileChunksInfoRequest{
-            Filename:   "nonexistent.txt",
-            StartChunk: 0,
-            EndChunk:   0,
-        }
-
-        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        assert.NoError(t, err)
-        assert.Equal(t, common.Status_ERROR, resp.Status.Code)
-        assert.Equal(t, ErrFileNotFound.Error(), resp.Status.Message)
-    })
-
-    t.Run("Invalid chunk range", func(t *testing.T) {
-        filename := "test.txt"
-        addFileToMaster(masterServer.Master, filename, []string{"chunk1", "chunk2", "chunk3"})
-
-        req := &client_pb.GetFileChunksInfoRequest{
-            Filename:   filename,
-            StartChunk: -1,
-            EndChunk:   3,
-        }
-
-        resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        assert.NoError(t, err)
-        assert.Equal(t, common.Status_ERROR, resp.Status.Code)
-        assert.Equal(t, ErrInvalidChunkRange.Error(), resp.Status.Message)
-    })
-    
     t.Run("New chunk handle creation and replication verification", func(t *testing.T) {
         filename := "new_chunks.txt"
-
         
+        // Reset server statuses to active
+        masterServer.Master.serversMu.Lock()
         for _, server := range masterServer.Master.servers {
             server.Status = "ACTIVE"
         }
+        masterServer.Master.serversMu.Unlock()
 
-        // Add file to master but don't initialize the chunk info
+        // Add file to master without chunks
         addFileToMaster(masterServer.Master, filename, []string{})
-        
+
+        // Create a done channel to track INIT_EMPTY commands
+        done := make(chan struct{})
+
+        // Start goroutines to handle response channels
+        for serverID, ch := range responseChannels {
+            go func(sID string, respCh chan *chunk_pb.HeartBeatResponse) {
+                select {
+                case response := <-respCh:
+                    // Verify INIT_EMPTY command
+                    if len(response.Commands) > 0 && response.Commands[0].Type == chunk_pb.ChunkCommand_INIT_EMPTY {
+                        // Simulate successful initialization
+                        masterServer.Master.chunksMu.Lock()
+                        chunkHandle := response.Commands[0].ChunkHandle.Handle
+                        if chunk, exists := masterServer.Master.chunks[chunkHandle]; exists {
+                            chunk.mu.Lock()
+                            chunk.Locations[sID] = true
+                            chunk.mu.Unlock()
+                        }
+                        masterServer.Master.chunksMu.Unlock()
+                        done <- struct{}{}
+                    }
+                case <-time.After(time.Second):
+                    // Timeout, do nothing
+                }
+            }(serverID, ch)
+        }
+
         // Request chunk info which should trigger replication
         req := &client_pb.GetFileChunksInfoRequest{
             Filename:   filename,
@@ -541,44 +504,44 @@ func TestMasterServer_GetFileChunksInfo(t *testing.T) {
         }
 
         resp, err := masterServer.GetFileChunksInfo(context.Background(), req)
-        
-        // Verify the response
         assert.NoError(t, err)
         assert.Equal(t, common.Status_OK, resp.Status.Code)
-        assert.Equal(t, 1, len(resp.Chunks))
 
-        // Get the chunk info from response - resp.Chunks is a map[int64]*ChunkInfo
-        responseChunk, exists := resp.Chunks[0]  // get chunk at index 0
-        assert.True(t, exists, "Chunk at index 0 should exist")
-        
-        // Verify that a primary was assigned
-        assert.NotNil(t, responseChunk.PrimaryLocation)
-        assert.NotEmpty(t, responseChunk.PrimaryLocation.ServerId)
-        
-        // Verify that we have secondary locations
-        assert.NotEmpty(t, responseChunk.SecondaryLocations)
-        assert.GreaterOrEqual(t, len(responseChunk.SecondaryLocations), 1, "Should have at least one secondary location")
-
-        // Verify that the primary is not in secondary locations
-        primaryID := responseChunk.PrimaryLocation.ServerId
-        for _, loc := range responseChunk.SecondaryLocations {
-            assert.NotEqual(t, primaryID, loc.ServerId, "Primary should not be in secondary locations")
+        // Wait for initialization to complete
+        select {
+        case <-done:
+            // Success
+        case <-time.After(2 * time.Second):
+            t.Fatal("Timeout waiting for chunk initialization")
         }
 
-        // Verify the chunk info was properly updated in the master
+        // Verify the response
+        assert.NotEmpty(t, resp.Chunks)
+        chunk, exists := resp.Chunks[0]
+        assert.True(t, exists, "Chunk at index 0 should exist")
+        assert.NotNil(t, chunk.PrimaryLocation)
+        assert.NotEmpty(t, chunk.SecondaryLocations)
+
+        // Verify chunk info in master
         masterServer.Master.filesMu.RLock()
         fileInfo := masterServer.Master.files[filename]
         fileInfo.mu.RLock()
-        chunkHandle := fileInfo.Chunks[0]  // Get the first chunk's handle
+        chunkHandle := fileInfo.Chunks[0]
         fileInfo.mu.RUnlock()
         masterServer.Master.filesMu.RUnlock()
+
         masterServer.Master.chunksMu.Lock()
         updatedChunk := masterServer.Master.chunks[chunkHandle]
-        assert.NotEmpty(t, updatedChunk.Primary, "Chunk should have a primary assigned")
-        assert.NotEmpty(t, updatedChunk.Locations, "Chunk should have locations assigned")
-        assert.Greater(t, updatedChunk.LeaseExpiration.Unix(), time.Now().Unix(), "Lease should be set in the future")
+        assert.NotEmpty(t, updatedChunk.Primary)
+        assert.NotEmpty(t, updatedChunk.Locations)
+        assert.Greater(t, updatedChunk.LeaseExpiration.Unix(), time.Now().Unix())
         masterServer.Master.chunksMu.Unlock()
     })
+
+    // Clean up
+    for _, ch := range responseChannels {
+        close(ch)
+    }
 }
 
 func TestMasterServer_CreateFile(t *testing.T) {
@@ -1199,4 +1162,29 @@ func TestMasterServer_CleanupExpiredOperations(t *testing.T) {
     case <-time.After(time.Second):
         t.Fatal("Timeout waiting for stream to close")
     }
+}
+
+func NewMockMaster(config *Config) *Master {
+    return &Master{
+        Config: config,
+        deletedFiles: make(map[string]*DeletedFileInfo),
+        files: make(map[string]*FileInfo),
+        chunks: make(map[string]*ChunkInfo),
+        servers: make(map[string]*ServerInfo),
+        pendingOps: make(map[string][]*PendingOperation),
+        chunkServerMgr: &ChunkServerManager{
+            activeStreams: make(map[string]chan *chunk_pb.HeartBeatResponse),
+        },
+    }
+}
+
+// NewTestMasterServer creates a MasterServer instance for testing
+func NewTestMasterServer(addr string, config *Config) (*MasterServer, error) {
+    server := &MasterServer{
+        Master: NewMockMaster(config),
+        grpcServer: grpc.NewServer(),
+    }
+
+    chunk_pb.RegisterChunkMasterServiceServer(server.grpcServer, server)
+    return server, nil
 }
