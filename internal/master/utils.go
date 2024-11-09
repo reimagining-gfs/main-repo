@@ -40,11 +40,6 @@ func (m *Master) assignNewPrimary(chunkHandle string) error {
     chunkInfo.mu.Lock()
     defer chunkInfo.mu.Unlock()
 
-    // Double-check if chunk still needs a primary
-    if chunkInfo.Primary != "" && time.Now().Before(chunkInfo.LeaseExpiration) {
-        return fmt.Errorf("primary already exists")
-    }
-
     // Get list of available servers that have this chunk
     availableServers := make([]string, 0)
     m.serversMu.RLock()
@@ -66,6 +61,20 @@ func (m *Master) assignNewPrimary(chunkHandle string) error {
     newPrimary := availableServers[rand.Intn(len(availableServers))]
     chunkInfo.Primary = newPrimary
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(m.Config.Lease.LeaseTimeout) * time.Second)
+
+    command := &chunk_pb.ChunkCommand{
+        Type: chunk_pb.ChunkCommand_BECOME_PRIMARY,
+        ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+    }
+
+    if err := m.chunkServerMgr.SendCommandToServer(newPrimary, command); err != nil {
+        return fmt.Errorf("failed to send become primary command: %v", err)
+    }
+
+    chunkInfo.mu.Lock()
+    chunkInfo.Primary = newPrimary
+    chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(m.Config.Lease.LeaseTimeout) * time.Second)
+    chunkInfo.mu.Unlock()
 
     return nil
 }
@@ -569,4 +578,26 @@ func (s *MasterServer) selectInitialChunkServers() []string {
     }
 
     return selectedServers
+}
+
+func (cm *ChunkServerManager) SendCommandToServer(serverId string, command *chunk_pb.ChunkCommand) error {
+    cm.mu.RLock()
+    stream, exists := cm.activeStreams[serverId]
+    cm.mu.RUnlock()
+
+    if !exists {
+        return fmt.Errorf("no active stream for server %s", serverId)
+    }
+
+    response := &chunk_pb.HeartBeatResponse{
+        Status:   &common_pb.Status{Code: common_pb.Status_OK},
+        Commands: []*chunk_pb.ChunkCommand{command},
+    }
+
+    select {
+    case stream <- response:
+        return nil
+    case <-time.After(5 * time.Second):
+        return fmt.Errorf("timeout sending command to server %s", serverId)
+    }
 }
