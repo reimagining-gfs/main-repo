@@ -63,6 +63,9 @@ type Master struct {
     deletedFilesMu  sync.RWMutex
     gcInProgress   bool
     gcMu           sync.Mutex
+
+    pendingOpsMu sync.RWMutex
+    pendingOps   map[string][]*PendingOperation // serverId -> pending operations
 }
 
 type ChunkServerManager struct {
@@ -76,4 +79,14 @@ type MasterServer struct {
     chunk_pb.UnimplementedChunkMasterServiceServer
     Master *Master
     grpcServer *grpc.Server
+}
+
+type PendingOperation struct {
+    Type         chunk_pb.ChunkCommand_CommandType
+    ChunkHandle  string
+    Targets      []string
+    Source       string
+    AttemptCount int
+    LastAttempt  time.Time
+    CreatedAt    time.Time
 }

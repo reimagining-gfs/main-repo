@@ -14,6 +14,16 @@ import (
     common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
 )
 
+func (m *Master) addPendingOperation(serverId string, op *PendingOperation) {
+    m.pendingOpsMu.Lock()
+    defer m.pendingOpsMu.Unlock()
+
+    if _, exists := m.pendingOps[serverId]; !exists {
+        m.pendingOps[serverId] = make([]*PendingOperation, 0)
+    }
+    m.pendingOps[serverId] = append(m.pendingOps[serverId], op)
+}
+
 func (m *Master) assignNewPrimary(chunkHandle string) error {
     m.chunksMu.Lock()
     defer m.chunksMu.Unlock()
@@ -58,6 +68,28 @@ func (m *Master) assignNewPrimary(chunkHandle string) error {
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(m.Config.Lease.LeaseTimeout) * time.Second)
 
     return nil
+}
+
+func (m *Master) cleanupExpiredOperations() {
+    m.pendingOpsMu.Lock()
+    defer m.pendingOpsMu.Unlock()
+
+    for serverId, ops := range m.pendingOps {
+        var validOps []*PendingOperation
+        for _, op := range ops {
+            if time.Since(op.CreatedAt) > time.Hour || op.AttemptCount >= 5 {
+                log.Printf("Operation failed permanently: type=%v, chunk=%s, server=%s, attempts=%d",
+                    op.Type, op.ChunkHandle, serverId, op.AttemptCount)
+            } else {
+                validOps = append(validOps, op)
+            }
+        }
+        if len(validOps) == 0 {
+            delete(m.pendingOps, serverId)
+        } else {
+            m.pendingOps[serverId] = validOps
+        }
+    }
 }
 
 func (s *MasterServer) updateServerStatus(serverId string, req *chunk_pb.HeartBeatRequest) error {
@@ -164,42 +196,39 @@ func (m *Master) initiateReplication(chunkHandle string) {
         return
     }
 
-    // Select target servers for replication
     targets := m.selectReplicationTargets(chunkHandle, neededReplicas)
     if len(targets) == 0 {
         log.Printf("No suitable targets found for replicating chunk %s", chunkHandle)
         return
     }
 
-    // Issue replication commands
-    command := &chunk_pb.ChunkCommand{
-        Type:       chunk_pb.ChunkCommand_REPLICATE,
-        ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
-        TargetLocations: targets,
-    }
-
-    // Find a source server to replicate from
     sourceServer := m.selectReplicationSource(chunkHandle)
     if sourceServer == "" {
         log.Printf("No source server available for replicating chunk %s", chunkHandle)
         return
     }
 
-    // Send replication command to source server
-    m.chunkServerMgr.mu.RLock()
-    if responseChannel, exists := m.chunkServerMgr.activeStreams[sourceServer]; exists {
-        select {
-        case responseChannel <- &chunk_pb.HeartBeatResponse{
-            Status:   &common_pb.Status{Code: common_pb.Status_OK},
-            Commands: []*chunk_pb.ChunkCommand{command},
-        }:
-            log.Printf("Initiated replication of chunk %s from %s to %d targets", 
-                chunkHandle, sourceServer, len(targets))
-        default:
-            log.Printf("Failed to send replication command: channel full")
-        }
+    targetIds := make([]string, len(targets))
+    for i, target := range targets {
+        targetIds[i] = target.ServerId
     }
-    m.chunkServerMgr.mu.RUnlock()
+
+    // Add to pending operations
+    op := &PendingOperation{
+        Type:        chunk_pb.ChunkCommand_REPLICATE,
+        ChunkHandle: chunkHandle,
+        Targets:     targetIds,
+        Source:      sourceServer,
+        CreatedAt:   time.Now(),
+    }
+    m.addPendingOperation(sourceServer, op)
+}
+
+func (m *Master) runPendingOpsCleanup() {
+    ticker := time.NewTicker(30 * time.Second)
+    for range ticker.C {
+        m.cleanupExpiredOperations()
+    }
 }
 
 func (m *Master) selectReplicationTargets(chunkHandle string, count int) []*common_pb.ChunkLocation {
@@ -320,57 +349,45 @@ func (m *Master) selectReplicationSource(chunkHandle string) string {
 func (s *MasterServer) generateChunkCommands(serverId string) []*chunk_pb.ChunkCommand {
     var commands []*chunk_pb.ChunkCommand
 
-    s.Master.serversMu.RLock()
-    serverInfo, exists := s.Master.servers[serverId]
-    if !exists {
-        s.Master.serversMu.RUnlock()
-        return commands
-    }
-    serverInfo.mu.RLock()
-    s.Master.serversMu.RUnlock()
-
-    // Check if server is overloaded
-    if serverInfo.ActiveOps > 100 || serverInfo.CPUUsage > 80 { // Configurable thresholds
-        serverInfo.mu.RUnlock()
-        return commands
-    }
-    serverInfo.mu.RUnlock()
-
-    s.Master.chunksMu.RLock()
-    defer s.Master.chunksMu.RUnlock()
-
-    // Generate necessary commands based on system state
-    for chunkHandle, chunkInfo := range s.Master.chunks {
-        chunkInfo.mu.RLock()
-
-        // Check if this chunk needs replication
-        if len(chunkInfo.Locations) < s.Master.Config.Replication.Factor {
-            // Check if this server is a good candidate for replication
-            if _, hasChunk := chunkInfo.Locations[serverId]; !hasChunk {
-                commands = append(commands, &chunk_pb.ChunkCommand{
-                    Type:       chunk_pb.ChunkCommand_REPLICATE,
-                    ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
-                })
+    s.Master.pendingOpsMu.Lock()
+    pendingOps, exists := s.Master.pendingOps[serverId]
+    if exists {
+        var remainingOps []*PendingOperation
+        for _, op := range pendingOps {
+            if time.Since(op.LastAttempt) < time.Second*5 {
+                remainingOps = append(remainingOps, op)
+                continue
             }
+
+            command := &chunk_pb.ChunkCommand{
+                Type:       op.Type,
+                ChunkHandle: &common_pb.ChunkHandle{Handle: op.ChunkHandle},
+            }
+
+            if op.Type == chunk_pb.ChunkCommand_REPLICATE {
+                command.TargetLocations = make([]*common_pb.ChunkLocation, len(op.Targets))
+                for i, target := range op.Targets {
+                    command.TargetLocations[i] = &common_pb.ChunkLocation{ServerId: target}
+                }
+            }
+
+            commands = append(commands, command)
+            op.AttemptCount++
+            op.LastAttempt = time.Now()
+            remainingOps = append(remainingOps, op)
         }
-
-        // Check if this server should become primary
-        if chunkInfo.Primary == "" && chunkInfo.Locations[serverId] {
-            commands = append(commands, &chunk_pb.ChunkCommand{
-                Type:       chunk_pb.ChunkCommand_BECOME_PRIMARY,
-                ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
-            })
-        }
-
-        chunkInfo.mu.RUnlock()
-
-        if len(commands) >= 5 { // Limit number of commands per heartbeat
-            break
+        
+        if len(remainingOps) == 0 {
+            delete(s.Master.pendingOps, serverId)
+        } else {
+            s.Master.pendingOps[serverId] = remainingOps
         }
     }
+    s.Master.pendingOpsMu.Unlock()
 
     return commands
 }
+
 
 // Add garbage collection related methods
 func (m *Master) runGarbageCollection() {
@@ -466,24 +483,12 @@ func (m *Master) processGCBatch(deletedPaths []string) {
 }
 
 func (m *Master) sendDeleteChunkCommand(serverId, chunkHandle string) {
-    command := &chunk_pb.ChunkCommand{
+    op := &PendingOperation{
         Type:        chunk_pb.ChunkCommand_DELETE,
-        ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+        ChunkHandle: chunkHandle,
+        CreatedAt:   time.Now(),
     }
-
-    m.chunkServerMgr.mu.RLock()
-    if responseChannel, exists := m.chunkServerMgr.activeStreams[serverId]; exists {
-        select {
-        case responseChannel <- &chunk_pb.HeartBeatResponse{
-            Status:   &common_pb.Status{Code: common_pb.Status_OK},
-            Commands: []*chunk_pb.ChunkCommand{command},
-        }:
-            log.Printf("Sent delete command for chunk %s to server %s", chunkHandle, serverId)
-        default:
-            log.Printf("Failed to send delete command: channel full")
-        }
-    }
-    m.chunkServerMgr.mu.RUnlock()
+    m.addPendingOperation(serverId, op)
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

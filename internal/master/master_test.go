@@ -987,3 +987,216 @@ func TestMasterServer_HeartBeat(t *testing.T) {
         }
     })
 }
+
+func TestMasterServer_InitiateReplication(t *testing.T) {
+    // Create master server
+    config, err := LoadConfig("../../configs/general-config.yml")
+    if err != nil {
+        t.Fatalf("Failed to load config: %v", err)
+    }
+
+    // Create a test server without starting gRPC
+    masterServer, err := NewMasterServer("localhost:0", config)
+    if err != nil {
+        t.Fatalf("Failed to create master server: %v", err)
+    }
+
+    // Add some active servers first
+    serverID1 := "server1"
+    serverID2 := "server2"
+    serverID3 := "server3"
+    serverID4 := "server4"
+    serverID5 := "server5"
+    
+    masterServer.Master.serversMu.Lock()
+    masterServer.Master.servers = map[string]*ServerInfo{
+        serverID1: {
+            Status: "ACTIVE",
+            AvailableSpace: 2048,  // Add available space
+            CPUUsage: 50.0,        // Add reasonable CPU usage
+            ActiveOps: 5,    // Add reasonable operation count
+        },
+        serverID2: {
+            Status: "ACTIVE",
+            AvailableSpace: 2048,
+            CPUUsage: 50.0,
+            ActiveOps: 5,
+        },
+        serverID3: {
+            Status: "ACTIVE",
+            AvailableSpace: 2048,
+            CPUUsage: 50.0,
+            ActiveOps: 5,
+        },
+        serverID4: {
+            Status: "ACTIVE",
+            AvailableSpace: 2048,
+            CPUUsage: 50.0,
+            ActiveOps: 5,
+        },
+        serverID5: {
+            Status: "ACTIVE",
+            AvailableSpace: 2048,
+            CPUUsage: 50.0,
+            ActiveOps: 5,
+        },
+    }
+    masterServer.Master.serversMu.Unlock()
+    
+    chunkHandle := "test-chunk"
+    masterServer.Master.chunks[chunkHandle] = &ChunkInfo{
+        Size:      1024,
+        Locations: make(map[string]bool),
+        mu:        sync.RWMutex{},
+    }
+
+    // Add existing replica - use serverID1 to match the map key
+    masterServer.Master.chunks[chunkHandle].Locations[serverID1] = true
+
+    // Test initiateReplication
+    masterServer.Master.initiateReplication(chunkHandle)
+
+    // Create mock stream to verify replication commands
+    mockStream := NewMockHeartBeatServer()
+    
+    errChan := make(chan error, 1)
+    go func() {
+        err := masterServer.HeartBeat(mockStream)
+        errChan <- err
+    }()
+
+    // Send heartbeat from server that should receive replication command
+    mockStream.recvChan <- &chunk_pb.HeartBeatRequest{
+        ServerId:         serverID1,  // Use consistent server ID
+        AvailableSpace:   2048,       // Match the server info
+        CpuUsage:         50.0,
+        ActiveOperations: 5,
+    }
+
+    // Verify replication command in response
+    select {
+    case resp := <-mockStream.sendChan:
+        if resp.Status.Code != common.Status_OK {
+            t.Errorf("Expected OK status, got %v", resp.Status.Code)
+        }
+        found := false
+        for _, cmd := range resp.Commands {
+            if cmd.Type == chunk_pb.ChunkCommand_REPLICATE && cmd.ChunkHandle.Handle == chunkHandle {
+                found = true
+                if len(cmd.TargetLocations) != 2 {
+                    t.Errorf("Expected 2 target locations, got %d", len(cmd.TargetLocations))
+                }
+                // Verify the target locations don't include the existing replica
+                for _, target := range cmd.TargetLocations {
+                    if target.ServerId == serverID1 {
+                        t.Errorf("Target locations should not include existing replica server")
+                    }
+                }
+            }
+        }
+        if !found {
+            t.Error("Expected to find replication command in response")
+        }
+    case <-time.After(time.Second):
+        t.Fatal("Timeout waiting for heartbeat response")
+    }
+
+    // Clean up
+    close(mockStream.recvChan)
+    select {
+    case err := <-errChan:
+        if err != io.EOF {
+            t.Errorf("Expected EOF, got %v", err)
+        }
+    case <-time.After(time.Second):
+        t.Fatal("Timeout waiting for stream to close")
+    }
+}
+
+func TestMasterServer_CleanupExpiredOperations(t *testing.T) {
+    // Create master server without starting gRPC
+    config, err := LoadConfig("../../configs/general-config.yml")
+    if err != nil {
+        t.Fatalf("Failed to load config: %v", err)
+    }
+
+    masterServer, err := NewMasterServer("localhost:0", config)
+    if err != nil {
+        t.Fatalf("Failed to create master server: %v", err)
+    }
+
+    serverId := "test-server"
+    chunkHandle := "test-chunk"
+
+    // Add operations with different ages and attempt counts
+    masterServer.Master.pendingOpsMu.Lock()
+    masterServer.Master.pendingOps[serverId] = []*PendingOperation{
+        {
+            Type:         chunk_pb.ChunkCommand_REPLICATE,
+            ChunkHandle:  chunkHandle,
+            AttemptCount: 6, // Should be cleaned up
+            CreatedAt:    time.Now(),
+        },
+        {
+            Type:         chunk_pb.ChunkCommand_REPLICATE,
+            ChunkHandle:  chunkHandle + "-2",
+            AttemptCount: 2,
+            CreatedAt:    time.Now().Add(-2 * time.Hour), // Should be cleaned up
+        },
+        {
+            Type:         chunk_pb.ChunkCommand_REPLICATE,
+            ChunkHandle:  chunkHandle + "-3",
+            AttemptCount: 1,
+            CreatedAt:    time.Now(), // Should remain
+        },
+    }
+    masterServer.Master.pendingOpsMu.Unlock()
+
+    // Create mock stream
+    mockStream := NewMockHeartBeatServer()
+    
+    errChan := make(chan error, 1)
+    go func() {
+        err := masterServer.HeartBeat(mockStream)
+        errChan <- err
+    }()
+
+    // Run cleanup
+    masterServer.Master.cleanupExpiredOperations()
+
+    // Send heartbeat to check remaining operations
+    mockStream.recvChan <- &chunk_pb.HeartBeatRequest{
+        ServerId:         serverId,
+        AvailableSpace:   1024,
+        CpuUsage:         50.0,
+        ActiveOperations: 5,
+    }
+
+    // Verify only non-expired operations in response
+    select {
+    case resp := <-mockStream.sendChan:
+        if resp.Status.Code != common.Status_OK {
+            t.Errorf("Expected OK status, got %v", resp.Status.Code)
+        }
+        if len(resp.Commands) != 1 {
+            t.Errorf("Expected 1 command, got %d", len(resp.Commands))
+        }
+        if len(resp.Commands) > 0 && resp.Commands[0].ChunkHandle.Handle != chunkHandle+"-3" {
+            t.Errorf("Expected remaining operation for chunk %s, got %s", 
+                chunkHandle+"-3", resp.Commands[0].ChunkHandle.Handle)
+        }
+    case <-time.After(time.Second):
+        t.Fatal("Timeout waiting for heartbeat response")
+    }
+
+    // Clean up
+    close(mockStream.recvChan)
+    select {
+    case err := <-errChan:
+        if err != io.EOF {
+            t.Errorf("Expected EOF, got %v", err)
+        }
+    case <-time.After(time.Second):
+        t.Fatal("Timeout waiting for stream to close")
+    }
+}

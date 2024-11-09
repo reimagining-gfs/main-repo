@@ -37,6 +37,7 @@ func NewMaster(config *Config) *Master {
         files: make(map[string]*FileInfo),
         chunks: make(map[string]*ChunkInfo),
         servers: make(map[string]*ServerInfo),
+        pendingOps: make(map[string][]*PendingOperation),
     }
     
     // bg processes to monitor leases, check server health and maintenance of replication
@@ -44,6 +45,7 @@ func NewMaster(config *Config) *Master {
     go m.monitorChunkReplication()
     go m.cleanupExpiredLeases()
     go m.runGarbageCollection()
+    go m.runPendingOpsCleanup()
 
     return m
 }
