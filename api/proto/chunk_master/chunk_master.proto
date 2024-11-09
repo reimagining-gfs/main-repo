@@ -7,7 +7,7 @@ import "api/proto/common/common.proto";
 
 service ChunkMasterService {
     // Used when chunk-server starts up, chunk-server reports all chunks stored
-    rpc ReportChunk(ReportChunkRequest) returns (ReportChunkResponse) {}
+    rpc ReportChunk(ReportChunkRequest) returns (stream ReportChunkResponse) {}
     rpc RequestLease(RequestLeaseRequest) returns (RequestLeaseResponse) {}
     rpc HeartBeat(stream HeartBeatRequest) returns (stream HeartBeatResponse) {}
 }
@@ -19,6 +19,7 @@ message ReportChunkRequest {
 
 message ReportChunkResponse {
     common.Status status = 1;
+    ChunkCommand command = 2;
 }
 
 message RequestLeaseRequest {
@@ -58,6 +59,7 @@ message ChunkCommand {
         BECOME_PRIMARY = 1;
         REPLICATE = 2;
         DELETE = 3;
+        INIT_EMPTY = 4;
     }
     CommandType type = 1;
     common.ChunkHandle chunk_handle = 2;
