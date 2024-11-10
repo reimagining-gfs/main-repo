@@ -6,7 +6,6 @@ import (
     "os"
     "os/signal"
     "syscall"
-    "time"
 
     "github.com/Mit-Vin/GFS-Distributed-Systems/internal/master"
 )
@@ -26,16 +25,6 @@ func main() {
     if err := server.Master.LoadMetadata(config.Metadata.Database.Path); err != nil {
         log.Printf("Error loading metadata: %v", err)
     }
-
-    // Periodic checkpointing
-    go func() {
-        ticker := time.NewTicker(time.Duration(config.Metadata.Database.BackupInterval) * time.Second)
-        for range ticker.C {
-            if err := server.Master.SaveMetadata(config.Metadata.Database.Path); err != nil {
-                log.Printf("Failed to save metadata: %v", err)
-            }
-        }
-    }()
 
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

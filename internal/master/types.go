@@ -66,6 +66,10 @@ type Master struct {
 
     pendingOpsMu sync.RWMutex
     pendingOps   map[string][]*PendingOperation // serverId -> pending operations
+
+    opLog         *OperationLog
+    isShutdown    bool
+    shutdownChan  chan struct{}
 }
 
 type ChunkServerManager struct {
