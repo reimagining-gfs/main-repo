@@ -17,7 +17,7 @@ func main() {
         log.Fatalf("Failed to load config: %v", err)
     }
 
-    addr := fmt.Sprintf("%s:%d", config.Server.Host, config.Server.Port)
+    addr := fmt.Sprintf("%s:%d", "localhost", 50051)
     server, err := master.NewMasterServer(addr, config)
     if err != nil {
         log.Fatalf("Failed to create master server: %v", err)
