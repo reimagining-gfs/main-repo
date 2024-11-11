@@ -111,6 +111,8 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
         return status.Error(codes.InvalidArgument, "server_id is required")
     }
 
+    log.Print("Received ReportChunk message: ", req.ServerId)
+
     // Create response channel for this server
     responseChan := make(chan *chunk_pb.HeartBeatResponse, 10)
     defer close(responseChan)
@@ -247,6 +249,8 @@ func (s *MasterServer) HeartBeat(stream chunk_pb.ChunkMasterService_HeartBeatSer
             return err
         }
 
+        log.Print("Received HeartBeat message: ", req.ServerId)
+
         if serverId == "" {
             serverId = req.ServerId
             s.Master.serversMu.Lock()
@@ -268,6 +272,8 @@ func (s *MasterServer) HeartBeat(stream chunk_pb.ChunkMasterService_HeartBeatSer
         }
 
         commands := s.generateChunkCommands(serverId)
+
+        log.Print("Commands: ", commands)
         
         response := &chunk_pb.HeartBeatResponse{
             Status:   &common_pb.Status{Code: common_pb.Status_OK},
