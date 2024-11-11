@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package gfs.chunk;
+
+option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk";
+
+import "api/proto/common/common.proto";
+
+service ChunkService {
+    rpc PushData (stream DataChunk) returns (PushDataResponse);
+    rpc ApplyMutation (ApplyMutationRequest) returns (ApplyMutationResponse);
+}
+
+// Messages for pushing data between chunk servers
+message DataChunk {
+    string operation_id = 1;
+    string chunk_handle = 2;
+    int64 offset = 3;
+    bytes data = 4;
+    uint32 checksum = 5;
+}
+
+message PushDataResponse {
+    common.Status status = 1;
+}
+
+message ApplyMutationRequest {
+    string chunk_handle = 1;
+    repeated Mutation mutations = 2;
+}
+
+message ApplyMutationResponse {
+    common.Status status = 1;
+}
+
+message Mutation {
+    enum Type {
+        WRITE = 0;
+        EXACTLY_ONCE_APPEND = 1;
+    }
+    string operation_id = 1;
+    Type type = 2;
+    int64 offset = 3;
+}
