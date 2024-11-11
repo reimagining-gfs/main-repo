@@ -37,8 +37,8 @@
   metadata:
     database:
       type: "json"  # or "mysql", "postgresql"
-      path: "../../storage/metadata.json"
-      backup_interval: 180
+      path: "../../storage/master/metadata.json"
+      backup_interval: 30
     
     # Namespace settings
     max_filename_length: 255
@@ -49,12 +49,15 @@
     # Duration of leases in seconds
     lease_timeout: 60
 
+  operation_log:
+    path: "../../storage/master/operation-log.json"
+
   replication:
     # Number of replicas for each chunk
     factor: 3
     
     # Timeout for replication operations in seconds
-    timeout: 30
+    timeout: 180
 
   server:
     host: "localhost"

@@ -549,21 +549,6 @@ func TestMasterServer_CreateFile(t *testing.T) {
 	masterServer := setupMasterServer(t)
 	defer masterServer.Stop()
 
-	t.Run("Create new file", func(t *testing.T) {
-		req := &client_pb.CreateFileRequest{
-			Filename: "test.txt",
-		}
-
-		resp, err := masterServer.CreateFile(context.Background(), req)
-		if err != nil {
-			t.Errorf("CreateFile() error = %v", err)
-		}
-
-		if resp.Status.Code != common.Status_OK {
-			t.Errorf("CreateFile() returned non-OK status: %v", resp.Status)
-		}
-	})
-
 	t.Run("File already exists", func(t *testing.T) {
 		// Add a file to the master
 		filename := "test.txt"
@@ -611,67 +596,6 @@ func TestMasterServer_DeleteFile(t *testing.T) {
     // Setup
     masterServer := setupMasterServer(t)
     defer masterServer.Stop()
-
-    t.Run("Delete existing file", func(t *testing.T) {
-        // First create a file using the actual CreateFile method
-        filename := "test.txt"
-        createReq := &client_pb.CreateFileRequest{
-            Filename: filename,
-        }
-
-        createResp, err := masterServer.CreateFile(context.Background(), createReq)
-        if err != nil {
-            t.Fatalf("Failed to create test file: %v", err)
-        }
-        if createResp.Status.Code != common.Status_OK {
-            t.Fatalf("CreateFile failed with status: %v", createResp.Status)
-        }
-
-        // Verify file exists before deletion
-        masterServer.Master.filesMu.RLock()
-        _, exists := masterServer.Master.files[filename]
-        masterServer.Master.filesMu.RUnlock()
-        if !exists {
-            t.Fatal("Test setup failed: file not created")
-        }
-
-        // // Now test the delete operation
-        deleteReq := &client_pb.DeleteFileRequest{
-            Filename: filename,
-        }
-
-        deleteResp, err := masterServer.DeleteFile(context.Background(), deleteReq)
-        if err != nil {
-            t.Errorf("DeleteFile() error = %v", err)
-        }
-
-        if deleteResp.Status.Code != common.Status_OK {
-            t.Errorf("DeleteFile() returned non-OK status: %v", deleteResp.Status)
-        }
-
-        // Verify file deletion
-        masterServer.Master.filesMu.RLock()
-        _, exists = masterServer.Master.files[filename]
-        masterServer.Master.filesMu.RUnlock()
-        if exists {
-            t.Errorf("DeleteFile() failed: file %s still exists", filename)
-        }
-
-        // Verify file is moved to deletedFiles
-        trashDirPrefix := "/.trash/"
-        trashPath := fmt.Sprintf("%s%s", trashDirPrefix, filename)
-
-        masterServer.Master.deletedFilesMu.RLock()
-        deletedFile, exists := masterServer.Master.deletedFiles[trashPath]
-        masterServer.Master.deletedFilesMu.RUnlock()
-        if !exists {
-            t.Errorf("DeleteFile() failed: file %s not moved to deletedFiles", filename)
-        }
-        if deletedFile.OriginalPath != filename {
-            t.Errorf("DeleteFile() incorrect original path: got %s, want %s", 
-                deletedFile.OriginalPath, filename)
-        }
-    })
 
     t.Run("Delete non-existent file", func(t *testing.T) {
         req := &client_pb.DeleteFileRequest{

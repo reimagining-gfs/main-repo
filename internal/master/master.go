@@ -21,6 +21,9 @@ import (
 
 func (s *MasterServer) Stop() {
     s.grpcServer.GracefulStop()
+    if s.Master.opLog != nil {
+        s.Master.opLog.Close()
+    }
 }
 
 func NewChunkServerManager(master *Master) *ChunkServerManager {
@@ -43,6 +46,19 @@ func NewMaster(config *Config) *Master {
 		},
     }
     
+    // Initialize operation log
+    // log.Print(config.OperationLog.Path)
+    opLog, err := NewOperationLog(config.OperationLog.Path, config.Metadata.Database.Path)
+    if err != nil {
+        log.Fatalf("Failed to initialize operation log: %v", err)
+    }
+    m.opLog = opLog
+
+    // Replay operation log
+    if err := m.replayOperationLog(); err != nil {
+        log.Fatalf("Failed to replay operation log: %v", err)
+    }
+
     // bg processes to monitor leases, check server health and maintenance of replication
     go m.monitorServerHealth()
     go m.monitorChunkReplication()
@@ -70,6 +86,20 @@ func NewMasterServer(addr string, config *Config) (*MasterServer, error) {
     go func() {
         if err := server.grpcServer.Serve(lis); err != nil {
             log.Fatalf("failed to serve: %v", err)
+        }
+    }()
+
+    go func() {
+        ticker := time.NewTicker(time.Duration(server.Master.Config.Metadata.Database.BackupInterval) * time.Second)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ticker.C:
+                if err := server.Master.checkpointMetadata(); err != nil {
+                    log.Printf("Failed to checkpoint metadata: %v", err)
+                }
+            }
         }
     }()
 
@@ -306,9 +336,14 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             
             s.Master.chunksMu.Lock()
             // Create new chunk info
-            s.Master.chunks[chunkHandle] = &ChunkInfo{
+            chunkInfo := &ChunkInfo{
                 mu:        sync.RWMutex{},
                 Locations: make(map[string]bool),
+            }
+            s.Master.chunks[chunkHandle] = chunkInfo
+
+            if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
+                log.Printf("Failed to log chunk creation: %v", err)
             }
             
             // Select initial servers for this chunk
@@ -380,6 +415,10 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
                 // Add only successful servers to locations
                 for _, serverId := range successfulServers {
                     chunkInfo.Locations[serverId] = true
+                }
+
+                if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
+                    log.Printf("Failed to log chunk update: %v", err)
                 }
                 chunkInfo.mu.Unlock()
             }
@@ -483,8 +522,14 @@ func (s *MasterServer) CreateFile(ctx context.Context, req *client_pb.CreateFile
     }
 
     // Create new file entry
-    s.Master.files[req.Filename] = &FileInfo{
+    fileInfo := &FileInfo{
         Chunks: make(map[int64]string),
+    }
+
+    s.Master.files[req.Filename] = fileInfo
+
+    if err := s.Master.opLog.LogOperation(OpCreateFile, req.Filename, "", fileInfo); err != nil {
+        log.Printf("Failed to log file creation: %v", err)
     }
 
     return &client_pb.CreateFileResponse{
@@ -500,6 +545,10 @@ func (s *MasterServer) DeleteFile(ctx context.Context, req *client_pb.DeleteFile
                 Message: err.Error(),
             },
         }, nil
+    }
+
+    if err := s.Master.opLog.LogOperation(OpDeleteFile, req.Filename, "", nil); err != nil {
+        log.Printf("Failed to log file deletion: %v", err)
     }
 
     s.Master.filesMu.Lock()
