@@ -43,6 +43,10 @@ type Config struct {
         LeaseTimeout     int `yaml:"lease_timeout"`
     } `yaml:"lease"`
 
+    OperationLog struct {
+        Path           string `yaml:"path"`
+    } `yaml:"operation_log"`
+
     Replication struct {
         Factor      int   `yaml:"factor"`
         Timeout     int   `yaml:"timeout"`
