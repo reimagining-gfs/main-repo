@@ -8,6 +8,7 @@ import "api/proto/common/common.proto";
 service ChunkOperationService {
     rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse) {}
     rpc ReadChunk(ReadChunkRequest) returns (ReadChunkResponse) {}
+    rpc PushDataToPrimary(PushDataToPrimaryRequest) returns (PushDataToPrimaryResponse) {}
     
     // Client -> Primary: Initial record append request
     rpc RecordAppendChunk(RecordAppendChunkRequest) returns (RecordAppendChunkResponse) {}
@@ -46,4 +47,16 @@ message RecordAppendChunkRequest {
 message RecordAppendChunkResponse {
     common.Status status = 1;
     int64 offset = 2;
+}
+
+message PushDataToPrimaryRequest {
+    string operation_id = 1;
+    common.ChunkHandle chunk_handle = 2;
+    bytes data = 3;
+    uint32 checksum = 4;
+    repeated string secondary_locations = 5;
+}
+
+message PushDataToPrimaryResponse {
+    common.Status status = 1;
 }
