@@ -26,13 +26,13 @@
   # Health check configuration
   health:
     # Interval between health checks(heart-beat) in seconds
-    check_interval: 10
+    check_interval: 20
     
     # Timeout for health check responses in seconds
-    timeout: 5
+    timeout: 30
     
     # Maximum consecutive failures before marking chunk-server as down
-    max_failures: 3
+    max_failures: 2
 
   metadata:
     database:

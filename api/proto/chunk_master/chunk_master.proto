@@ -14,7 +14,8 @@ service ChunkMasterService {
 
 message ReportChunkRequest {
     string server_id = 1;
-    repeated common.ChunkHandle chunks = 2;
+    string server_address = 2;
+    repeated common.ChunkHandle chunks = 3;
 }
 
 message ReportChunkResponse {
@@ -41,11 +42,12 @@ message ChunkStatus {
 
 message HeartBeatRequest {
     string server_id = 1;
-    string timestamp = 2;
-    repeated ChunkStatus chunks = 3;
-    int64 available_space = 4;
-    double cpu_usage = 5;
-    int32 active_operations = 6;
+    string server_address = 2;
+    string timestamp = 3;
+    repeated ChunkStatus chunks = 4;
+    int64 available_space = 5;
+    double cpu_usage = 6;
+    int32 active_operations = 7;
 }
 
 message HeartBeatResponse {

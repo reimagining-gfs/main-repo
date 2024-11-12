@@ -9,7 +9,7 @@ message ChunkHandle {
 
 message ChunkLocation {
     string server_id = 1;
-    string address = 2;
+    string server_address = 2;
     int32 port = 3;
 }
 

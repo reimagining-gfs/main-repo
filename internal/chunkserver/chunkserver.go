@@ -145,6 +145,7 @@ func (cs *ChunkServer) reportChunks() error {
 
     stream, err := cs.masterClient.ReportChunk(ctx, &chunk_pb.ReportChunkRequest{
         ServerId: cs.serverID,
+        ServerAddress: cs.address,
         Chunks:   chunks,
     })
     if err != nil {
@@ -215,6 +216,7 @@ func (cs *ChunkServer) buildHeartbeatRequest() *chunk_pb.HeartBeatRequest {
     }
 
     return &chunk_pb.HeartBeatRequest{
+        ServerAddress:    cs.address,
         ServerId:         cs.serverID,
         Timestamp:        time.Now().Format(time.RFC3339),
         Chunks:           chunks,

@@ -138,6 +138,7 @@ func (s *MasterServer) updateServerStatus(serverId string, req *chunk_pb.HeartBe
         chunkInfo.mu.Lock()
         chunkInfo.Size = chunkStatus.Size
         chunkInfo.Locations[serverId] = true
+        chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
         chunkInfo.mu.Unlock()
 
         serverInfo.Chunks[chunkHandle] = true
@@ -184,6 +185,7 @@ func (m *Master) handleServerFailure(serverId string) {
     }
 
     // Remove server from active servers
+    log.Print("Failure: ", serverId)
     delete(m.servers, serverId)
 }
 
