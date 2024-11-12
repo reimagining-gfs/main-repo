@@ -1,0 +1,15 @@
+server:
+  master_address: "localhost:50051"
+  data_dir: "../../storage/chunks"
+  heartbeat_interval: 10  
+
+storage:
+  max_chunk_size: 1048576
+  buffer_size: 65536
+  flush_interval: 30
+
+operation:
+  read_timeout: 30
+  write_timeout: 60
+  retry_attempts: 3
+  retry_delay: 5
