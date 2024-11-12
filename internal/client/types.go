@@ -65,7 +65,6 @@ const (
 type FileHandle struct {
     client   *Client
     filename string
-    readOnly bool
     position int64
     mu       sync.RWMutex
 }
