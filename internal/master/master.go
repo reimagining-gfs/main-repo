@@ -47,7 +47,7 @@ func NewMaster(config *Config) *Master {
     }
     
     // Initialize operation log
-    // log.Print(config.OperationLog.Path)
+
     opLog, err := NewOperationLog(config.OperationLog.Path, config.Metadata.Database.Path)
     if err != nil {
         log.Fatalf("Failed to initialize operation log: %v", err)
@@ -190,6 +190,8 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
         return nil, status.Error(codes.InvalidArgument, "chunk_handle is required")
     }
 
+    log.Print("Received Lease request: ", req.ServerId)
+
     s.Master.chunksMu.RLock()
     chunkInfo, exists := s.Master.chunks[req.ChunkHandle.Handle]
     s.Master.chunksMu.RUnlock()
@@ -220,6 +222,8 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
 
     // Extend the lease
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(s.Master.Config.Lease.LeaseTimeout) * time.Second)
+
+    log.Print("Extending: ", req.ServerId)
 
     return &chunk_pb.RequestLeaseResponse{
         Status:          &common_pb.Status{Code: common_pb.Status_OK},
@@ -418,8 +422,6 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             if len(successfulServers) > 0 {
                 chunkInfo := s.Master.chunks[chunkHandle]
                 chunkInfo.mu.Lock()
-                chunkInfo.Primary = successfulServers[0]
-                chunkInfo.LeaseExpiration = time.Now().Add(time.Minute * 1)
                 
                 // Add only successful servers to locations
                 for _, serverId := range successfulServers {

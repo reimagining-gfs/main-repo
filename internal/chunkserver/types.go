@@ -11,35 +11,37 @@ import (
 )
 
 type ChunkMetadata struct {
-    Size       int64
+    Size         int64
     LastModified time.Time
     Checksum     uint32
 }
 
 type ChunkServer struct {
     mu sync.RWMutex
-    
+
     // Server identification
     serverID string
     address  string
-    
-    config   *Config
-    
+
+    config *Config
+
     dataDir     string
-    serverDir   string  // Complete path including serverID
+    serverDir   string // Complete path including serverID
     chunks      map[string]*ChunkMetadata
-    
+
     // Operation coordination
     operationQueue *OperationQueue
     leases        map[string]time.Time
-    
+
     // Master connection
     masterClient  chunk_pb.ChunkMasterServiceClient
     heartbeatStop chan struct{}
-    
+
     // Server state
     availableSpace int64
     isRunning     bool
+
+    chunkPrimary map[string]bool
 
     grpcServer *grpc.Server
 }

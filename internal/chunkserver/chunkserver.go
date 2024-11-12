@@ -44,6 +44,7 @@ func NewChunkServer(serverID, address string, config *Config) (*ChunkServer, err
 		leases:        make(map[string]time.Time),
 		masterClient:  chunk_pb.NewChunkMasterServiceClient(conn),
 		heartbeatStop: make(chan struct{}),
+        chunkPrimary:  make(map[string]bool),
 		grpcServer:    grpcServer,
         operationQueue: NewOperationQueue(),
 	}
@@ -74,6 +75,7 @@ func (cs *ChunkServer) Start() error {
 
 
 	go cs.startHeartbeat()
+    go cs.startLeaseRequester()
 
     return nil
 }
@@ -247,9 +249,137 @@ func (cs *ChunkServer) handleChunkCommand(cmd *chunk_pb.ChunkCommand) error {
 
     log.Printf("Handling command type %v for chunk %s", cmd.Type, cmd.ChunkHandle.Handle)
 
-    switch cmd.Type {
-	// TODO: Add other command types as well
+    switch cmd.Type {    
+    case chunk_pb.ChunkCommand_INIT_EMPTY:
+        return cs.handleInitEmpty(cmd)
+
+    case chunk_pb.ChunkCommand_BECOME_PRIMARY:
+        return cs.handleBecomePrimary(cmd)
+    
+    case chunk_pb.ChunkCommand_NONE:
+        return nil
+    
     default:
         return fmt.Errorf("unknown command type: %v", cmd.Type)
+    }
+}
+
+func (cs *ChunkServer) handleInitEmpty(cmd *chunk_pb.ChunkCommand) error {
+    if cmd.ChunkHandle == nil {
+        return fmt.Errorf("received init empty command with nil chunk handle")
+    }
+
+    chunkHandle := cmd.ChunkHandle.Handle
+    chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+    _, err := os.Stat(chunkPath)
+    if err == nil {
+        return fmt.Errorf("chunk %s already exists", chunkHandle)
+    } else if !os.IsNotExist(err) {
+        return fmt.Errorf("error checking chunk file existence: %v", err)
+    }
+
+    file, err := os.Create(chunkPath)
+    if err != nil {
+        return fmt.Errorf("failed to create chunk file %s: %v", chunkHandle, err)
+    }
+    defer file.Close()
+
+    cs.mu.Lock()
+    cs.chunks[chunkHandle] = &ChunkMetadata{
+        Size:         0,
+        LastModified: time.Now(),
+    }
+    cs.mu.Unlock()
+
+    log.Printf("Created new empty chunk: %s", chunkHandle)
+    return nil
+}
+
+func (cs *ChunkServer) handleBecomePrimary(cmd *chunk_pb.ChunkCommand) error {
+    if cmd.ChunkHandle == nil {
+        return fmt.Errorf("received become primary command with nil chunk handle")
+    }
+
+    chunkHandle := cmd.ChunkHandle.Handle
+    chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+    _, err := os.Stat(chunkPath)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return fmt.Errorf("chunk data does not exist", chunkHandle)
+        } else {
+            return fmt.Errorf("error checking chunk data existence: %v", err)
+        }
+    }
+
+    cs.mu.Lock()
+    if _, ok := cs.chunks[chunkHandle]; !ok {
+        info, err := os.Stat(chunkPath)
+        if err != nil {
+            cs.mu.Unlock()
+            return fmt.Errorf("failed to get file info for chunk %s: %v", chunkHandle, err)
+        }
+
+        cs.chunks[chunkHandle] = &ChunkMetadata{
+            Size:         info.Size(),
+            LastModified: info.ModTime(),
+        }
+    }
+    cs.mu.Unlock()
+
+    // Acquire the lease for the chunk
+    cs.mu.Lock()
+    cs.leases[chunkHandle] = time.Now().Add(time.Duration(cs.config.Server.LeaseTimeout) * time.Second)
+    cs.chunkPrimary[chunkHandle] = true
+    cs.mu.Unlock()
+
+    log.Printf("Acquired lease for chunk %s", chunkHandle)
+    return nil
+}
+
+func (cs *ChunkServer) requestLease(chunkHandle string) error {
+    ctx := context.Background()
+    req := &chunk_pb.RequestLeaseRequest{
+        ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+        ServerId:    cs.serverID,
+    }
+
+    resp, err := cs.masterClient.RequestLease(ctx, req)
+    if err != nil {
+        return fmt.Errorf("failed to request lease: %v", err)
+    }
+
+    if resp.Status.Code != common_pb.Status_OK {
+        return fmt.Errorf("lease request failed: %v", resp.Status)
+    }
+
+    if resp.Granted {
+        cs.leases[chunkHandle] = time.Now().Add(time.Duration(resp.LeaseExpiration) * time.Second)
+        cs.chunkPrimary[chunkHandle] = true
+        log.Printf("Acquired lease for chunk %s until %v", chunkHandle, cs.leases[chunkHandle])
+    } else {
+        delete(cs.leases, chunkHandle)
+        delete(cs.chunkPrimary, chunkHandle)
+        log.Printf("Failed to acquire lease for chunk %s", chunkHandle)
+    }
+
+    return nil
+}
+
+func (cs *ChunkServer) startLeaseRequester() {
+    ticker := time.NewTicker(time.Duration(cs.config.Server.LeaseRequestInterval) * time.Second)
+
+    // TODO: Extend lease only in case you have an ongoing operation
+    for range ticker.C {
+        cs.mu.RLock()
+        for handle, isPrimary := range cs.chunkPrimary {
+            if isPrimary {
+                if err := cs.requestLease(handle); err != nil {
+                    log.Printf("Failed to request lease for chunk %s: %v", handle, err)
+                }
+            }
+        }
+        cs.mu.RUnlock()
     }
 }
