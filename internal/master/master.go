@@ -47,7 +47,7 @@ func NewMaster(config *Config) *Master {
     }
     
     // Initialize operation log
-    // log.Print(config.OperationLog.Path)
+
     opLog, err := NewOperationLog(config.OperationLog.Path, config.Metadata.Database.Path)
     if err != nil {
         log.Fatalf("Failed to initialize operation log: %v", err)
@@ -111,8 +111,6 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
         return status.Error(codes.InvalidArgument, "server_id is required")
     }
 
-    log.Print("Received ReportChunk message: ", req.ServerId)
-
     // Create response channel for this server
     responseChan := make(chan *chunk_pb.HeartBeatResponse, 10)
     defer close(responseChan)
@@ -133,6 +131,7 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
     s.Master.serversMu.Lock()
     if _, exists := s.Master.servers[req.ServerId]; !exists {
         s.Master.servers[req.ServerId] = &ServerInfo{
+            Address:       req.ServerAddress,
             LastHeartbeat: time.Now(),
             Chunks:        make(map[string]bool),
             Status:        "ACTIVE",
@@ -147,11 +146,13 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
         if _, exists := s.Master.chunks[chunkHandle]; !exists {
             s.Master.chunks[chunkHandle] = &ChunkInfo{
                 Locations: make(map[string]bool),
+                ServerAddresses: make(map[string]string),
             }
         }
         
         s.Master.chunks[chunkHandle].mu.Lock()
         s.Master.chunks[chunkHandle].Locations[req.ServerId] = true
+        s.Master.chunks[chunkHandle].ServerAddresses[req.ServerId] = req.ServerAddress
         s.Master.chunks[chunkHandle].mu.Unlock()
 
         serverInfo.mu.Lock()
@@ -189,6 +190,8 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
         return nil, status.Error(codes.InvalidArgument, "chunk_handle is required")
     }
 
+    log.Print("Received Lease request: ", req.ServerId)
+
     s.Master.chunksMu.RLock()
     chunkInfo, exists := s.Master.chunks[req.ChunkHandle.Handle]
     s.Master.chunksMu.RUnlock()
@@ -219,6 +222,8 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
 
     // Extend the lease
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(s.Master.Config.Lease.LeaseTimeout) * time.Second)
+
+    log.Print("Extending: ", req.ServerId)
 
     return &chunk_pb.RequestLeaseResponse{
         Status:          &common_pb.Status{Code: common_pb.Status_OK},
@@ -255,6 +260,7 @@ func (s *MasterServer) HeartBeat(stream chunk_pb.ChunkMasterService_HeartBeatSer
             serverId = req.ServerId
             s.Master.serversMu.Lock()
             s.Master.servers[serverId] = &ServerInfo{
+                Address:         req.ServerAddress,
                 LastHeartbeat:   time.Now(),
                 AvailableSpace:  req.AvailableSpace,
                 CPUUsage:        req.CpuUsage,
@@ -345,6 +351,7 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             chunkInfo := &ChunkInfo{
                 mu:        sync.RWMutex{},
                 Locations: make(map[string]bool),
+                ServerAddresses: make(map[string]string),
             }
             s.Master.chunks[chunkHandle] = chunkInfo
 
@@ -415,12 +422,14 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             if len(successfulServers) > 0 {
                 chunkInfo := s.Master.chunks[chunkHandle]
                 chunkInfo.mu.Lock()
-                chunkInfo.Primary = successfulServers[0]
-                chunkInfo.LeaseExpiration = time.Now().Add(time.Minute * 5)
                 
                 // Add only successful servers to locations
                 for _, serverId := range successfulServers {
                     chunkInfo.Locations[serverId] = true
+
+                    s.Master.serversMu.Lock()
+                    chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
+                    s.Master.serversMu.Unlock()
                 }
 
                 if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
@@ -460,9 +469,11 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
         locations := make([]*common_pb.ChunkLocation, 0)
         var primaryLocation *common_pb.ChunkLocation
 
+        s.Master.serversMu.Lock()
         if chunkInfo.Primary != "" && time.Now().Before(chunkInfo.LeaseExpiration) {
             primaryLocation = &common_pb.ChunkLocation{
                 ServerId: chunkInfo.Primary,
+                ServerAddress: s.Master.servers[chunkInfo.Primary].Address,
             }
         }
 
@@ -470,9 +481,11 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
             if serverId != chunkInfo.Primary {
                 locations = append(locations, &common_pb.ChunkLocation{
                     ServerId: serverId,
+                    ServerAddress: s.Master.servers[serverId].Address,
                 })
             }
         }
+        s.Master.serversMu.Unlock()
 
         if primaryLocation == nil {
             chunkInfo.mu.RUnlock()

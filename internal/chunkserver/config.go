@@ -12,6 +12,8 @@ type Config struct {
         MasterAddress     string        `yaml:"master_address"`
         DataDir          string        `yaml:"data_dir"`
         HeartbeatInterval int           `yaml:"heartbeat_interval"`
+        LeaseTimeout int           `yaml:"lease_timeout"`
+        LeaseRequestInterval int           `yaml:"lease_request_interval"`
     } `yaml:"server"`
     
     Storage struct {

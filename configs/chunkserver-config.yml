@@ -2,6 +2,8 @@ server:
   master_address: "localhost:50051"
   data_dir: "../../storage/chunks"
   heartbeat_interval: 10  
+  lease_timeout: 60
+  lease_request_interval: 50
 
 storage:
   max_chunk_size: 1048576
