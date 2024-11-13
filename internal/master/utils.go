@@ -71,10 +71,8 @@ func (m *Master) assignNewPrimary(chunkHandle string) error {
         return fmt.Errorf("failed to send become primary command: %v", err)
     }
 
-    chunkInfo.mu.Lock()
     chunkInfo.Primary = newPrimary
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(m.Config.Lease.LeaseTimeout) * time.Second)
-    chunkInfo.mu.Unlock()
 
     return nil
 }

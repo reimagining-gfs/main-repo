@@ -36,6 +36,7 @@ func NewClient(configPath string) (*Client, error) {
         conn:       conn,
         client:     client_pb.NewClientMasterServiceClient(conn),
         chunkCache: make(map[string]*ChunkLocationCache),
+        chunkHandleCache: make(map[string]*client_pb.ChunkInfo),
         activeOps:  make(map[string]*Operation),
     }, nil
 }
@@ -126,6 +127,7 @@ func (c *Client) GetChunkInfo(ctx context.Context, filename string, startIndex, 
             Info:      chunkInfo,
             ExpiresAt: time.Now().Add(c.config.Cache.ChunkTTL),
         }
+        c.chunkHandleCache[chunkInfo.ChunkHandle.Handle] = chunkInfo
         results[idx] = chunkInfo
     }
     c.chunkCacheMu.Unlock()

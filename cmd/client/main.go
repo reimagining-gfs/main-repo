@@ -177,6 +177,15 @@ func processCommand(input string) bool {
 		endChunk, _ := strconv.ParseInt(args[3], 10, 64)
 		handleGetChunks(ctx, args[1], startChunk, endChunk)
 
+	case "push":
+        if len(args) < 3 {
+            color.Red("Usage: push <chunk_handle> <data>")
+            return true
+        }
+        
+		data := strings.Join(args[2:], " ")
+        handlePushData(ctx, args[1], data)
+
 	case "ls":
 		handleList(ctx)
 
@@ -194,6 +203,7 @@ func printHelp() {
 	fmt.Println("  read <filename> <chunk_handle> <offset> <length> - Read file contents")
 	fmt.Println("  write <filename> <primary_handle> <secondary_handles> <offset> <data> - Write content to a file")
 	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
+	fmt.Println("  push <chunk_handle> <data>     - Push data to a chunk")
 	fmt.Println("  ls                                          - List all files")
 	fmt.Println("  help                                        - Show this help")
 	fmt.Println("  exit                                        - Exit the shell")
@@ -246,4 +256,13 @@ func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk 
 		fmt.Printf("  Primary: %s\n", chunk.PrimaryLocation.ServerId)
 		fmt.Printf("  Secondaries: %v\n", chunk.SecondaryLocations)
 	}
+}
+
+func handlePushData(ctx context.Context, chunkHandle string, data string) {
+    err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
+    if err != nil {
+        color.Red("Failed to push data: %v", err)
+        return
+    }
+    color.Green("Data pushed successfully to chunk %s", chunkHandle)
 }
