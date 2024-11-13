@@ -12,6 +12,7 @@ import (
 type ChunkInfo struct {
     Size    int64
     Locations map[string]bool  
+    ServerAddresses map[string]string  
     Primary   string          
     LeaseExpiration time.Time
     mu sync.RWMutex
@@ -23,6 +24,7 @@ type FileInfo struct {
 }
 
 type ServerInfo struct {
+    Address string
     LastHeartbeat time.Time
     AvailableSpace int64
     CPUUsage float64

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"context"
@@ -138,19 +139,52 @@ func processCommand(input string) bool {
 		handleDelete(ctx, args[1])
 
 	case "read":
-		if len(args) < 2 {
-			color.Red("Usage: read <filename>")
+		if len(args) < 4 {
+			color.Red("Usage: read <filename> <chunk_handle> <offset> <length>")
 			return true
 		}
-		handleRead(ctx, args[1])
+		offset, _ := strconv.ParseInt(args[3], 10, 64)
+		length, _ := strconv.ParseInt(args[4], 10, 64)
+		handleRead(ctx, args[1], args[2], offset, length)
 
 	case "write":
-		if len(args) < 3 {
-			color.Red("Usage: write <filename> <content>")
+		if len(args) < 5 {
+			color.Red("Usage: write <filename> <primary_handle> <secondary_handles> <offset> <content>")
+			color.Yellow("Note: secondary_handles should be comma-separated list of handles")
 			return true
 		}
-		content := strings.Join(args[2:], " ")
-		handleWrite(ctx, args[1], content)
+		
+		// Parse secondary handles
+		secondaries := strings.Split(args[3], ",")
+		
+		// Parse offset
+		offset, err := strconv.ParseInt(args[4], 10, 64)
+		if err != nil {
+			color.Red("Invalid offset: %v", err)
+			return true
+		}
+		
+		// Join remaining args as content
+		content := strings.Join(args[5:], " ")
+		handleWrite(ctx, args[1], args[2], secondaries, offset, content)
+
+	case "chunks":
+		if len(args) < 4 {
+			color.Red("Usage: chunks <filename> <start_chunk> <end_chunk>")
+			return true
+		}
+		startChunk, _ := strconv.ParseInt(args[2], 10, 64)
+		endChunk, _ := strconv.ParseInt(args[3], 10, 64)
+		handleGetChunks(ctx, args[1], startChunk, endChunk)
+
+	case "push":
+        if len(args) < 3 {
+            color.Red("Usage: push <chunk_handle> <data>")
+            return true
+        }
+        
+		data := strings.Join(args[2:], " ")
+        handlePushData(ctx, args[1], data)
 
 	case "ls":
 		handleList(ctx)
@@ -164,13 +198,15 @@ func processCommand(input string) bool {
 
 func printHelp() {
 	color.Cyan("Available Commands:")
-	fmt.Println("  create <filename>              - Create a new file")
-	fmt.Println("  delete <filename>              - Delete a file")
-	fmt.Println("  read <filename>                - Read file contents")
-	fmt.Println("  write <filename> <content>     - Write content to a file")
-	fmt.Println("  ls                             - List all files")
-	fmt.Println("  help                           - Show this help")
-	fmt.Println("  exit                           - Exit the shell")
+	fmt.Println("  create <filename>                           - Create a new file")
+	fmt.Println("  delete <filename>                           - Delete a file")
+	fmt.Println("  read <filename> <chunk_handle> <offset> <length> - Read file contents")
+	fmt.Println("  write <filename> <primary_handle> <secondary_handles> <offset> <data> - Write content to a file")
+	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
+	fmt.Println("  push <chunk_handle> <data>     - Push data to a chunk")
+	fmt.Println("  ls                                          - List all files")
+	fmt.Println("  help                                        - Show this help")
+	fmt.Println("  exit                                        - Exit the shell")
 }
 
 func handleCreate(ctx context.Context, filename string) {
@@ -191,12 +227,12 @@ func handleDelete(ctx context.Context, filename string) {
 	color.Green("File deleted successfully: %s", filename)
 }
 
-func handleRead(ctx context.Context, filename string) {
+func handleRead(ctx context.Context, filename, handle string, offset, length int64) {
 	// TODO: Implement read functionality when available in the chunk-server
 	color.Yellow("Read functionality not implemented yet")
 }
 
-func handleWrite(ctx context.Context, filename, content string) {
+func handleWrite(ctx context.Context, filename, primaryHandle string, secondaryHandles []string, offset int64, content string) {
 	// TODO: Implement write functionality when available in the chunk-server
 	color.Yellow("Write functionality not implemented yet")
 }
@@ -204,4 +240,29 @@ func handleWrite(ctx context.Context, filename, content string) {
 func handleList(ctx context.Context) {
 	// TODO: Implement listing functionality when available in the master
 	color.Yellow("Listing functionality not implemented yet")
+}
+
+func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk int64) {
+	chunks, err := gfsClient.GetChunkInfo(ctx, filename, startChunk, endChunk)
+	if err != nil {
+		color.Red("Failed to get chunk info: %v", err)
+		return
+	}
+
+	color.Green("Chunk Information for %s (chunks %d to %d):", filename, startChunk, endChunk)
+	for idx, chunk := range chunks {
+		color.Cyan("Chunk %d:", idx)
+		fmt.Printf("  Handle: %s\n", chunk.ChunkHandle.Handle)
+		fmt.Printf("  Primary: %s\n", chunk.PrimaryLocation.ServerId)
+		fmt.Printf("  Secondaries: %v\n", chunk.SecondaryLocations)
+	}
+}
+
+func handlePushData(ctx context.Context, chunkHandle string, data string) {
+    err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
+    if err != nil {
+        color.Red("Failed to push data: %v", err)
+        return
+    }
+    color.Green("Data pushed successfully to chunk %s", chunkHandle)
 }

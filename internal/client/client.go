@@ -36,6 +36,7 @@ func NewClient(configPath string) (*Client, error) {
         conn:       conn,
         client:     client_pb.NewClientMasterServiceClient(conn),
         chunkCache: make(map[string]*ChunkLocationCache),
+        chunkHandleCache: make(map[string]*client_pb.ChunkInfo),
         activeOps:  make(map[string]*Operation),
     }, nil
 }
@@ -61,15 +62,6 @@ func (c *Client) Create(ctx context.Context, filename string) error {
     return nil
 }
 
-func (c *Client) Open(filename string, readOnly bool) (*FileHandle, error) {
-    return &FileHandle{
-        client:   c,
-        filename: filename,
-        readOnly: readOnly,
-        position: 0,
-    }, nil
-}
-
 func (c *Client) Delete(ctx context.Context, filename string) error {
     req := &client_pb.DeleteFileRequest{
         Filename: filename,
@@ -87,22 +79,30 @@ func (c *Client) Delete(ctx context.Context, filename string) error {
     return nil
 }
 
-func (c *Client) getChunkInfo(ctx context.Context, filename string, chunkIndex int64) (*client_pb.ChunkInfo, error) {
-    cacheKey := fmt.Sprintf("%s-%d", filename, chunkIndex)
-
+func (c *Client) GetChunkInfo(ctx context.Context, filename string, startIndex, endIndex int64) (map[int64]*client_pb.ChunkInfo, error) {
+    results := make(map[int64]*client_pb.ChunkInfo)
+    
     c.chunkCacheMu.RLock()
-    if cached, ok := c.chunkCache[cacheKey]; ok {
-        if time.Now().Before(cached.ExpiresAt) {
-            c.chunkCacheMu.RUnlock()
-            return cached.Info, nil
+    needFetch := false
+    for idx := startIndex; idx <= endIndex; idx++ {
+        cacheKey := fmt.Sprintf("%s-%d", filename, idx)
+        if cached, ok := c.chunkCache[cacheKey]; ok && time.Now().Before(cached.ExpiresAt) {
+            results[idx] = cached.Info
+        } else {
+            needFetch = true
+            break
         }
     }
     c.chunkCacheMu.RUnlock()
 
+    if !needFetch {
+        return results, nil
+    }
+
     req := &client_pb.GetFileChunksInfoRequest{
         Filename:   filename,
-        StartChunk: chunkIndex,
-        EndChunk:   chunkIndex,
+        StartChunk: startIndex,
+        EndChunk:   endIndex,
     }
 
     resp, err := c.client.GetFileChunksInfo(ctx, req)
@@ -114,17 +114,23 @@ func (c *Client) getChunkInfo(ctx context.Context, filename string, chunkIndex i
         return nil, fmt.Errorf("get chunk info failed: %s", resp.Status.Message)
     }
 
-    chunkInfo, ok := resp.Chunks[chunkIndex]
-    if !ok {
-        return nil, fmt.Errorf("chunk index %d not found", chunkIndex)
-    }
-
     c.chunkCacheMu.Lock()
-    c.chunkCache[cacheKey] = &ChunkLocationCache{
-        Info:      chunkInfo,
-        ExpiresAt: time.Now().Add(c.config.Cache.ChunkTTL),
+    for idx := startIndex; idx <= endIndex; idx++ {
+        chunkInfo, ok := resp.Chunks[idx]
+        if !ok {
+            c.chunkCacheMu.Unlock()
+            return nil, fmt.Errorf("chunk index %d not found", idx)
+        }
+
+        cacheKey := fmt.Sprintf("%s-%d", filename, idx)
+        c.chunkCache[cacheKey] = &ChunkLocationCache{
+            Info:      chunkInfo,
+            ExpiresAt: time.Now().Add(c.config.Cache.ChunkTTL),
+        }
+        c.chunkHandleCache[chunkInfo.ChunkHandle.Handle] = chunkInfo
+        results[idx] = chunkInfo
     }
     c.chunkCacheMu.Unlock()
 
-    return chunkInfo, nil
+    return results, nil
 }
