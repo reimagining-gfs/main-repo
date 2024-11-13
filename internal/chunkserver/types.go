@@ -6,6 +6,8 @@ import (
     "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
 
     chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
+    chunk_ops "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations"
+    chunkserver_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk"
 
     "google.golang.org/grpc"
 )
@@ -43,7 +45,13 @@ type ChunkServer struct {
 
     chunkPrimary map[string]bool
 
+    pendingData     map[string]map[string]*PendingData  // operationID -> chunkHandle -> data
+    pendingDataLock sync.RWMutex
+
     grpcServer *grpc.Server
+
+    chunk_ops.UnimplementedChunkOperationServiceServer
+    chunkserver_pb.UnimplementedChunkServiceServer
 }
 
 type Operation struct {
@@ -74,4 +82,10 @@ type OperationQueue struct {
     mu       sync.Mutex
     queue    []*Operation
     notEmpty chan struct{}
+}
+
+type PendingData struct {
+    Data     []byte
+    Checksum uint32
+    Offset   int64
 }

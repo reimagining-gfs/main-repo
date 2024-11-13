@@ -35,6 +35,7 @@ type Client struct {
     client     client_pb.ClientMasterServiceClient
 
     chunkCache   map[string]*ChunkLocationCache
+    chunkHandleCache map[string]*client_pb.ChunkInfo
     chunkCacheMu sync.RWMutex
 
     activeOps    map[string]*Operation

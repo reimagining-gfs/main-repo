@@ -54,7 +54,7 @@ message PushDataToPrimaryRequest {
     common.ChunkHandle chunk_handle = 2;
     bytes data = 3;
     uint32 checksum = 4;
-    repeated string secondary_locations = 5;
+    repeated common.ChunkLocation secondary_locations = 5;
 }
 
 message PushDataToPrimaryResponse {

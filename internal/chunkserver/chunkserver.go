@@ -13,6 +13,8 @@ import (
 
     chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
 	common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
+    chunk_ops "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations"
+    chunkserver_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk"
     "google.golang.org/grpc"
 )
 
@@ -45,9 +47,13 @@ func NewChunkServer(serverID, address string, config *Config) (*ChunkServer, err
 		masterClient:  chunk_pb.NewChunkMasterServiceClient(conn),
 		heartbeatStop: make(chan struct{}),
         chunkPrimary:  make(map[string]bool),
+        pendingData: make(map[string]map[string]*PendingData),
 		grpcServer:    grpcServer,
         operationQueue: NewOperationQueue(),
 	}
+    
+    chunk_ops.RegisterChunkOperationServiceServer(cs.grpcServer, cs)
+    chunkserver_pb.RegisterChunkServiceServer(cs.grpcServer, cs)
 
 	go func() {
 		if err := cs.grpcServer.Serve(lis); err != nil {
