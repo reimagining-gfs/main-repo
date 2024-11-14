@@ -8,7 +8,9 @@ import "api/proto/common/common.proto";
 
 service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
-    rpc ApplyMutation (ApplyMutationRequest) returns (ApplyMutationResponse);
+    rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
+
+    // [TODO]: Primary -> Secondary: Serialized record append operations
 }
 
 // Messages for pushing data between chunk servers
@@ -24,21 +26,13 @@ message PushDataResponse {
     common.Status status = 1;
 }
 
-message ApplyMutationRequest {
-    string chunk_handle = 1;
-    repeated Mutation mutations = 2;
-}
-
-message ApplyMutationResponse {
-    common.Status status = 1;
-}
-
-message Mutation {
-    enum Type {
-        WRITE = 0;
-        EXACTLY_ONCE_APPEND = 1;
-    }
+// Messages for forwarding write request to secondary chunk servers
+message ForwardWriteRequest {
     string operation_id = 1;
-    Type type = 2;
+    common.ChunkHandle chunk_handle = 2;
     int64 offset = 3;
+}
+
+message ForwardWriteResponse {
+    common.Status status = 1;
 }
