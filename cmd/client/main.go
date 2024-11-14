@@ -140,33 +140,36 @@ func processCommand(input string) bool {
 
 	case "read":
 		if len(args) < 4 {
-			color.Red("Usage: read <filename> <chunk_handle> <offset> <length>")
-			return true
-		}
-		offset, _ := strconv.ParseInt(args[3], 10, 64)
-		length, _ := strconv.ParseInt(args[4], 10, 64)
-		handleRead(ctx, args[1], args[2], offset, length)
+            color.Red("Usage: read <filename> <offset> <length>")
+            return true
+        }
+        offset, err := strconv.ParseInt(args[2], 10, 64)
+        if err != nil {
+            color.Red("Invalid offset: %v", err)
+            return true
+        }
+        length, err := strconv.ParseInt(args[3], 10, 64)
+        if err != nil {
+            color.Red("Invalid length: %v", err)
+            return true
+        }
+        handleRead(ctx, args[1], offset, length)
+
 
 	case "write":
-		if len(args) < 5 {
-			color.Red("Usage: write <filename> <primary_handle> <secondary_handles> <offset> <content>")
-			color.Yellow("Note: secondary_handles should be comma-separated list of handles")
+		if len(args) < 3 {
+			color.Red("Usage: write <filename> <offset> <data>")
 			return true
 		}
 		
-		// Parse secondary handles
-		secondaries := strings.Split(args[3], ",")
-		
-		// Parse offset
-		offset, err := strconv.ParseInt(args[4], 10, 64)
+		offset, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil {
 			color.Red("Invalid offset: %v", err)
 			return true
 		}
 		
-		// Join remaining args as content
-		content := strings.Join(args[5:], " ")
-		handleWrite(ctx, args[1], args[2], secondaries, offset, content)
+		content := strings.Join(args[3:], " ")
+		handleWrite(ctx, args[1], offset, content)
 
 	case "chunks":
 		if len(args) < 4 {
@@ -200,8 +203,8 @@ func printHelp() {
 	color.Cyan("Available Commands:")
 	fmt.Println("  create <filename>                           - Create a new file")
 	fmt.Println("  delete <filename>                           - Delete a file")
-	fmt.Println("  read <filename> <chunk_handle> <offset> <length> - Read file contents")
-	fmt.Println("  write <filename> <primary_handle> <secondary_handles> <offset> <data> - Write content to a file")
+	fmt.Println("  read <filename> <offset> <length> - Read file contents")
+	fmt.Println("  write <filename> <offset> <data> - Write content to a file")
 	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
 	fmt.Println("  push <chunk_handle> <data>     - Push data to a chunk")
 	fmt.Println("  ls                                          - List all files")
@@ -227,14 +230,26 @@ func handleDelete(ctx context.Context, filename string) {
 	color.Green("File deleted successfully: %s", filename)
 }
 
-func handleRead(ctx context.Context, filename, handle string, offset, length int64) {
-	// TODO: Implement read functionality when available in the chunk-server
-	color.Yellow("Read functionality not implemented yet")
+func handleRead(ctx context.Context, filename string, offset, length int64) {
+    data, err := gfsClient.Read(ctx, filename, offset, length)
+    if err != nil {
+        color.Red("Failed to read file: %v", err)
+        return
+    }
+
+    color.Green("Successfully read %d bytes:", len(data))
+    fmt.Println(string(data))
 }
 
-func handleWrite(ctx context.Context, filename, primaryHandle string, secondaryHandles []string, offset int64, content string) {
-	// TODO: Implement write functionality when available in the chunk-server
-	color.Yellow("Write functionality not implemented yet")
+
+func handleWrite(ctx context.Context, filename string, offset int64, content string) {
+    data := []byte(content)
+    written, err := gfsClient.Write(ctx, filename, offset, data)
+    if err != nil {
+        color.Red("Failed to write to file: %v", err)
+        return
+    }
+    color.Green("Successfully wrote %d bytes to file", written)
 }
 
 func handleList(ctx context.Context) {
@@ -259,10 +274,11 @@ func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk 
 }
 
 func handlePushData(ctx context.Context, chunkHandle string, data string) {
-    err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
+    operationId, err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
     if err != nil {
         color.Red("Failed to push data: %v", err)
         return
     }
+	color.Green("OperationId: %s", operationId)
     color.Green("Data pushed successfully to chunk %s", chunkHandle)
 }

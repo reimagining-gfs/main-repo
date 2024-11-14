@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 
-	"github.com/google/uuid"
 	"github.com/Mit-Vin/GFS-Distributed-Systems/internal/chunkserver"
 )
 
@@ -14,7 +13,7 @@ func main() {
 	port := flag.Int("port", 8080, "Port number to run the chunk server on")
 	flag.Parse()
 
-	serverID := uuid.NewString()
+	serverID := fmt.Sprintf("server-%d", *port)
 
 	address := fmt.Sprintf("localhost:%d", *port)
 

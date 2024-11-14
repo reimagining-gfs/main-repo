@@ -82,6 +82,7 @@ func (cs *ChunkServer) Start() error {
 
 	go cs.startHeartbeat()
     go cs.startLeaseRequester()
+    go cs.processOperations()
 
     return nil
 }
@@ -387,5 +388,40 @@ func (cs *ChunkServer) startLeaseRequester() {
             }
         }
         cs.mu.RUnlock()
+    }
+}
+
+func (cs * ChunkServer) processOperations() {
+    for {
+        operation := cs.operationQueue.Pop()
+        if operation == nil {
+            continue
+        }
+
+        switch operation.Type {
+        case OpWrite:
+            err := cs.handleWrite(operation)
+
+            if err != nil {
+                operation.ResponseChan <- OperationResult{
+                    Status: common_pb.Status{
+                        Code:    common_pb.Status_ERROR,
+                        Message: err.Error(),
+                    },
+                    Error: err,
+                }
+            } else {
+                operation.ResponseChan <- OperationResult{
+                    Status: common_pb.Status{
+                        Code:    common_pb.Status_OK,
+                        Message: "Write operation succeeded",
+                    },
+                    Error: nil,
+                }
+            }
+
+        default:
+            log.Println("Unknown operation type:", operation.Type)
+        }
     }
 }

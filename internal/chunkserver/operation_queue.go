@@ -22,11 +22,6 @@ func (q *OperationQueue) Push(op *Operation) {
 
 func (q *OperationQueue) Pop() *Operation {
     q.mu.Lock()
-    if len(q.queue) == 0 {
-        q.mu.Unlock()
-        <-q.notEmpty
-        q.mu.Lock()
-    }
     
     if len(q.queue) == 0 {
         q.mu.Unlock()

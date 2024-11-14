@@ -14,29 +14,31 @@ import (
 
 const ChunkSize = 1 * 1024 * 1024 // 1MB
 
-func (c *Client) PushDataToPrimary(ctx context.Context, chunkHandle string, data []byte) error {
+
+func (c *Client) PushDataToPrimary(ctx context.Context, chunkHandle string, data []byte) (string, error) {
     // Get chunk information from cache
     c.chunkCacheMu.RLock()
     chunkInfo, exists := c.chunkHandleCache[chunkHandle]
     c.chunkCacheMu.RUnlock()
 
     if !exists {
-        return fmt.Errorf("chunk information not found in cache for handle, request again: %s", chunkHandle)
+        return "", fmt.Errorf("chunk information not found in cache for handle, request again: %s", chunkHandle)
     }
 
     if chunkInfo.PrimaryLocation == nil {
-        return fmt.Errorf("primary location not found for chunk: %s", chunkHandle)
+        return "", fmt.Errorf("primary location not found for chunk: %s", chunkHandle)
     }
 
     conn, err := grpc.Dial(chunkInfo.PrimaryLocation.ServerAddress, grpc.WithInsecure())
     if err != nil {
-        return fmt.Errorf("failed to connect to primary server: %v", err)
+        return "", fmt.Errorf("failed to connect to primary server: %v", err)
     }
     defer conn.Close()
 
     client := chunk_ops.NewChunkOperationServiceClient(conn)
 
     checksum := crc32.ChecksumIEEE(data)
+    operationId := uuid.New().String() // Generate unique operation ID
 
     req := &chunk_ops.PushDataToPrimaryRequest{
         ChunkHandle: &common_pb.ChunkHandle{
@@ -44,63 +46,173 @@ func (c *Client) PushDataToPrimary(ctx context.Context, chunkHandle string, data
         },
         Data:              data,
         Checksum:          checksum,
-        OperationId:       uuid.New().String(), // Generate unique operation ID
+        OperationId:       operationId,
         SecondaryLocations: chunkInfo.SecondaryLocations,
     }
 
     resp, err := client.PushDataToPrimary(ctx, req)
     if err != nil {
-        return fmt.Errorf("failed to push data: %v", err)
+        return "", fmt.Errorf("failed to push data: %v", err)
     }
 
     if resp.Status.Code != common_pb.Status_OK {
-        return fmt.Errorf("push data failed: %s", resp.Status.Message)
+        return "", fmt.Errorf("push data failed: %s", resp.Status.Message)
     }
 
-    return nil
+    return operationId, nil
 }
 
-func (fh *FileHandle) Read(handle string, offset int64, length int64) ([]byte, error) {
+func (c *Client) Read(ctx context.Context, filename string, offset int64, length int64) ([]byte, error) {
     if length <= 0 {
         return nil, fmt.Errorf("invalid read length: %d", length)
     }
 
-    // Create a buffer to store the read data
-    // buffer := make([]byte, length)
+    startChunk := offset / ChunkSize
+    endChunk := (offset + length - 1) / ChunkSize
 
-    // TODO: Implement connection pooling to chunk servers
-    // Connect to chunk server and read data
-    // For now, return unimplemented error
-    return nil, fmt.Errorf("read operation not yet implemented")
+    chunks, err := c.GetChunkInfo(ctx, filename, startChunk, endChunk)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get chunk info: %v", err)
+    }
+
+    result := make([]byte, 0, length)
+    remainingLength := length
+    currentOffset := offset
+
+    for i := startChunk; i <= endChunk; i++ {
+        chunkInfo, ok := chunks[i]
+        if !ok {
+            return nil, fmt.Errorf("chunk info missing for index %d", i)
+        }
+
+        chunkOffset := currentOffset % ChunkSize
+
+        bytesToRead := ChunkSize - chunkOffset
+        if bytesToRead > remainingLength {
+            bytesToRead = remainingLength
+        }
+
+        var serverAddr string
+        if chunkInfo.PrimaryLocation != nil {
+            serverAddr = chunkInfo.PrimaryLocation.ServerAddress
+        } else if len(chunkInfo.SecondaryLocations) > 0 {
+            serverAddr = chunkInfo.SecondaryLocations[0].ServerAddress
+        } else {
+            return nil, fmt.Errorf("no available servers for chunk %s", chunkInfo.ChunkHandle.Handle)
+        }
+
+        conn, err := grpc.Dial(serverAddr, grpc.WithInsecure())
+        if err != nil {
+            return nil, fmt.Errorf("failed to connect to chunk server: %v", err)
+        }
+        defer conn.Close()
+
+        client := chunk_ops.NewChunkOperationServiceClient(conn)
+
+        readReq := &chunk_ops.ReadChunkRequest{
+            ChunkHandle: chunkInfo.ChunkHandle,
+            Offset:     chunkOffset,
+            Length:     bytesToRead,
+        }
+
+        // Execute read request
+        readResp, err := client.ReadChunk(ctx, readReq)
+        if err != nil {
+            return nil, fmt.Errorf("failed to read from chunk %s: %v", 
+                chunkInfo.ChunkHandle.Handle, err)
+        }
+
+        if readResp.Status.Code != common_pb.Status_OK {
+            return nil, fmt.Errorf("read chunk failed: %s", readResp.Status.Message)
+        }
+
+        result = append(result, readResp.Data...)
+
+        bytesRead := int64(len(readResp.Data))
+        remainingLength -= bytesRead
+        currentOffset += bytesRead
+
+        if remainingLength <= 0 {
+            break
+        }
+    }
+
+    return result, nil
 }
 
-func (fh *FileHandle) Write(primary string, secondaries []string, offset int64, data []byte) (int, error) {
-    if len(data) == 0 {
-        return 0, nil
+func (c *Client) Write(ctx context.Context, filename string, offset int64, data []byte) (int, error) {
+    // Get chunk information from the master
+    startChunk := offset / ChunkSize
+    endChunk := (offset + int64(len(data))) / ChunkSize
+    chunks, err := c.GetChunkInfo(ctx, filename, startChunk, endChunk)
+    if err != nil {
+        return 0, fmt.Errorf("failed to get chunk info: %v", err)
     }
 
-    if offset < 0 {
-        return 0, fmt.Errorf("invalid write offset: %d", offset)
+    totalWritten := 0
+    remainingData := data
+    currentOffset := offset
+
+    // Process each chunk
+    for i := startChunk; i <= endChunk; i++ {
+        chunkInfo, ok := chunks[i]
+        if !ok {
+            return totalWritten, fmt.Errorf("chunk info missing for index %d", i)
+        }
+
+        // Calculate the offset within this chunk
+        chunkOffset := currentOffset % ChunkSize
+
+        var chunkData []byte
+        bytesRemaining := ChunkSize - chunkOffset
+        if int64(len(remainingData)) > bytesRemaining {
+            chunkData = remainingData[:bytesRemaining]
+            remainingData = remainingData[bytesRemaining:]
+        } else {
+            chunkData = remainingData
+            remainingData = nil
+        }
+
+        operationId, err := c.PushDataToPrimary(ctx, chunkInfo.ChunkHandle.Handle, chunkData)
+        if err != nil {
+            return totalWritten, fmt.Errorf("failed to push data to primary for chunk %s: %v", 
+                chunkInfo.ChunkHandle.Handle, err)
+        }
+
+        conn, err := grpc.Dial(chunkInfo.PrimaryLocation.ServerAddress, grpc.WithInsecure())
+        if err != nil {
+            return totalWritten, fmt.Errorf("failed to connect to primary server: %v", err)
+        }
+        defer conn.Close()
+
+        writeReq := &chunk_ops.WriteChunkRequest{
+            ChunkHandle: chunkInfo.ChunkHandle,
+            Offset:     chunkOffset,
+            Secondaries: chunkInfo.SecondaryLocations,
+            OperationId: operationId,
+        }
+
+        client := chunk_ops.NewChunkOperationServiceClient(conn)
+        writeResp, err := client.WriteChunk(ctx, writeReq)
+        if err != nil {
+            return totalWritten, fmt.Errorf("failed to write chunk %s: %v", 
+                chunkInfo.ChunkHandle.Handle, err)
+        }
+
+        if writeResp.Status.Code != common_pb.Status_OK {
+            return totalWritten, fmt.Errorf("write chunk failed: %s", writeResp.Status.Message)
+        }
+
+        bytesWritten := len(chunkData)
+        totalWritten += bytesWritten
+        currentOffset += int64(bytesWritten)
+
+        if len(remainingData) == 0 {
+            break
+        }
     }
 
-    // Ensure write doesn't exceed chunk boundaries
-    if offset+int64(len(data)) > ChunkSize {
-        return 0, fmt.Errorf("write would exceed chunk size")
-    }
-
-    // Create write operation
-    // writeOp := &WriteOperation{
-    //     Primary:     primary,
-    //     Secondaries: secondaries,
-    //     Offset:      offset,
-    //     Data:        data,
-    // }
-
-    // TODO: Implement connection pooling to chunk servers
-    // Connect to primary chunk server and initiate write operation
-    // Primary will coordinate with secondaries for replication
-    // For now, return unimplemented error
-    return 0, fmt.Errorf("write operation not yet implemented")
+    return totalWritten, nil
 }
 
 // Supporting types for write operations

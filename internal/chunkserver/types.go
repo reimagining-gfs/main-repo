@@ -6,6 +6,7 @@ import (
     "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
 
     chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
+    common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
     chunk_ops "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations"
     chunkserver_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk"
 
@@ -55,12 +56,13 @@ type ChunkServer struct {
 }
 
 type Operation struct {
+    OperationId   string
     Type          OperationType
     ChunkHandle   string
     Offset        int64
     Data          []byte
     Checksum      uint32
-    Secondaries   []string
+    Secondaries   []*common_pb.ChunkLocation
     ResponseChan  chan OperationResult
 }
 
