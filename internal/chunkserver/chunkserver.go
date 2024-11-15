@@ -235,6 +235,59 @@ func (cs *ChunkServer) buildHeartbeatRequest() *chunk_pb.HeartBeatRequest {
     }
 }
 
+func (cs *ChunkServer) handleDelete(cmd *chunk_pb.ChunkCommand) error {
+    if cmd.ChunkHandle == nil {
+        return fmt.Errorf("received delete command with nil chunk handle")
+    }
+
+    chunkHandle := cmd.ChunkHandle.Handle
+    chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+    // Check if the chunk file exists
+    _, err := os.Stat(chunkPath)
+    if err != nil {
+        if os.IsNotExist(err) {
+            // The chunk file doesn't exist, so we can return without doing anything
+            return nil
+        } else {
+            // There was an error checking the file existence
+            return fmt.Errorf("error checking chunk file existence: %v", err)
+        }
+    }
+
+    // Attempt to delete the chunk file
+    err = os.Remove(chunkPath)
+    if err != nil {
+        // If the deletion failed, log the error and retry after a delay
+        log.Printf("Failed to delete chunk file %s: %v", chunkHandle, err)
+
+        // Retry the deletion after a delay
+        for i := 0; i < 3; i++ {
+            time.Sleep(time.Second * 5)
+            err = os.Remove(chunkPath)
+            if err == nil {
+                break
+            }
+            log.Printf("Retrying delete of chunk file %s (attempt %d): %v", chunkHandle, i+1, err)
+        }
+
+        // If the deletion still failed after retries, return the error
+        if err != nil {
+            return fmt.Errorf("failed to delete chunk file %s after retries: %v", chunkHandle, err)
+        }
+    }
+
+    // Remove the chunk metadata from the map
+    cs.mu.Lock()
+    delete(cs.chunks, chunkHandle)
+    delete(cs.leases, chunkHandle)
+    delete(cs.chunkPrimary, chunkHandle)
+    cs.mu.Unlock()
+
+    log.Printf("Deleted chunk: %s", chunkHandle)
+    return nil
+}
+
 func (cs *ChunkServer) handleHeartbeatResponse(resp *chunk_pb.HeartBeatResponse) {
     if resp.Status.Code != common_pb.Status_OK {
         log.Printf("Received error status in heartbeat: %v", resp.Status)
@@ -265,6 +318,9 @@ func (cs *ChunkServer) handleChunkCommand(cmd *chunk_pb.ChunkCommand) error {
     
     case chunk_pb.ChunkCommand_REPLICATE:
         return cs.handleReplicate(cmd)
+
+    case chunk_pb.ChunkCommand_DELETE:
+        return cs.handleDelete(cmd)
     
     case chunk_pb.ChunkCommand_NONE:
         return nil

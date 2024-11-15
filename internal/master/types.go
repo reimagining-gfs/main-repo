@@ -36,13 +36,6 @@ type ServerInfo struct {
     mu sync.RWMutex
 }
 
-type DeletedFileInfo struct {
-    OriginalPath string
-    DeleteTime   time.Time
-    FileInfo     *FileInfo
-}
-
-
 type Master struct {
     Config *Config
     
@@ -54,6 +47,9 @@ type Master struct {
     chunks map[string]*ChunkInfo  // chunk_handle -> chunk info
     chunksMu sync.RWMutex
 
+    deletedChunks map[string]bool 
+    deletedChunksMu sync.RWMutex
+
     // Server management
     servers map[string]*ServerInfo  // server_id -> server info
     serversMu sync.RWMutex
@@ -61,8 +57,6 @@ type Master struct {
     // Chunk server manager
     chunkServerMgr *ChunkServerManager
 
-    deletedFiles    map[string]*DeletedFileInfo  // map[deleted_path]*DeletedFileInfo
-    deletedFilesMu  sync.RWMutex
     gcInProgress   bool
     gcMu           sync.Mutex
 

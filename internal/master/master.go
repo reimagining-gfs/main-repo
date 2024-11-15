@@ -36,9 +36,9 @@ func NewChunkServerManager(master *Master) *ChunkServerManager {
 func NewMaster(config *Config) *Master {
     m := &Master{
         Config: config,
-        deletedFiles: make(map[string]*DeletedFileInfo),
         files: make(map[string]*FileInfo),
         chunks: make(map[string]*ChunkInfo),
+        deletedChunks: make(map[string]bool),
         servers: make(map[string]*ServerInfo),
         pendingOps: make(map[string][]*PendingOperation),
         chunkServerMgr: &ChunkServerManager{
@@ -623,9 +623,10 @@ func (s *MasterServer) DeleteFile(ctx context.Context, req *client_pb.DeleteFile
     }
 
     s.Master.filesMu.Lock()
-    fileInfo, exists := s.Master.files[req.Filename]
+    defer s.Master.filesMu.Unlock()
+
+    _, exists := s.Master.files[req.Filename]
     if !exists {
-        s.Master.filesMu.Unlock()
         return &client_pb.DeleteFileResponse{
             Status: &common_pb.Status{
                 Code:    common_pb.Status_ERROR,
@@ -634,21 +635,12 @@ func (s *MasterServer) DeleteFile(ctx context.Context, req *client_pb.DeleteFile
         }, nil
     }
 
-    // Generate unique trash path
-    trashPath := fmt.Sprintf("%s%s", s.Master.Config.Deletion.TrashDirPrefix, req.Filename)
+    now := time.Now().Format("2006-01-02T15:04:05")
+    trashPath := fmt.Sprintf("%s_%s", req.Filename, now)
+    trashPath = fmt.Sprintf("%s%s", s.Master.Config.Deletion.TrashDirPrefix, trashPath)
     
-    // Move to deleted files
-    s.Master.deletedFilesMu.Lock()
-    s.Master.deletedFiles[trashPath] = &DeletedFileInfo{
-        OriginalPath: req.Filename,
-        DeleteTime:   time.Now(),
-        FileInfo:     fileInfo,
-    }
-    s.Master.deletedFilesMu.Unlock()
-    
-    // Remove from active files
+    s.Master.files[trashPath] = s.Master.files[req.Filename]
     delete(s.Master.files, req.Filename)
-    s.Master.filesMu.Unlock()
 
     log.Printf("Soft deleted file %s (moved to %s)", req.Filename, trashPath)
 
