@@ -9,6 +9,7 @@ service ClientMasterService {
     rpc GetFileChunksInfo(GetFileChunksInfoRequest) returns (GetFileChunksInfoResponse) {}
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse) {}
     rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {}
+    rpc RenameFile(RenameFileRequest) returns (RenameFileResponse) {}
 }
 
 message ChunkInfo {
@@ -45,5 +46,14 @@ message DeleteFileRequest {
 }
 
 message DeleteFileResponse {
+    common.Status status = 1;
+}
+
+message RenameFileRequest {
+    string old_filename = 1;
+    string new_filename = 2;
+}
+
+message RenameFileResponse {
     common.Status status = 1;
 }

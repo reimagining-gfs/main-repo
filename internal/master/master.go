@@ -556,6 +556,58 @@ func (s *MasterServer) CreateFile(ctx context.Context, req *client_pb.CreateFile
     }, nil
 }
 
+func (s *MasterServer) RenameFile(ctx context.Context, req *client_pb.RenameFileRequest) (*client_pb.RenameFileResponse, error) {
+    if err := s.validateFilename(req.OldFilename); err != nil {
+        return &client_pb.RenameFileResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: err.Error(),
+            },
+        }, nil
+    }
+
+    if err := s.validateFilename(req.NewFilename); err != nil {
+        return &client_pb.RenameFileResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: err.Error(),
+            },
+        }, nil
+    }
+
+    s.Master.filesMu.Lock()
+    defer s.Master.filesMu.Unlock()
+
+    if _, exists := s.Master.files[req.NewFilename]; exists {
+        return &client_pb.RenameFileResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: ErrFileExists.Error(),
+            },
+        }, nil
+    }
+
+    if _, exists := s.Master.files[req.OldFilename]; !exists {
+        return &client_pb.RenameFileResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: ErrFileNotFound.Error(),
+            },
+        }, nil
+    }
+
+    s.Master.files[req.NewFilename] = s.Master.files[req.OldFilename]
+    delete(s.Master.files, req.OldFilename)
+
+    if err := s.Master.opLog.LogOperation(OpRenameFile, req.OldFilename, "", map[string]string{"new_filename": req.NewFilename}); err != nil {
+        log.Printf("Failed to log file rename: %v", err)
+    }
+
+    return &client_pb.RenameFileResponse{
+        Status: &common_pb.Status{Code: common_pb.Status_OK},
+    }, nil
+}
+
 func (s *MasterServer) DeleteFile(ctx context.Context, req *client_pb.DeleteFileRequest) (*client_pb.DeleteFileResponse, error) {
     if err := s.validateFilename(req.Filename); err != nil {
         return &client_pb.DeleteFileResponse{
