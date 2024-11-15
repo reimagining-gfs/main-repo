@@ -3,12 +3,24 @@ package client
 import (
     "context"
     "fmt"
+    "strings"
     "time"
 
     client_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/client_master"
     common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
     "google.golang.org/grpc"
 )
+
+func (c *Client) cleanupChunkCache(filename string) {
+    c.chunkCacheMu.Lock()
+    defer c.chunkCacheMu.Unlock()
+
+    for cacheKey, _ := range c.chunkCache {
+        if strings.HasPrefix(cacheKey, filename+"-") {
+            delete(c.chunkCache, cacheKey)
+        }
+    }
+}
 
 func NewClient(configPath string) (*Client, error) {
     config, err := LoadConfig(configPath)
@@ -62,6 +74,26 @@ func (c *Client) Create(ctx context.Context, filename string) error {
     return nil
 }
 
+func (c *Client) Rename(ctx context.Context, old_filename, new_filename string) error {
+    req := &client_pb.RenameFileRequest{
+        OldFilename: old_filename,
+        NewFilename: new_filename,
+    }
+
+    resp, err := c.client.RenameFile(ctx, req)
+    if err != nil {
+        return fmt.Errorf("failed to rename file: %v", err)
+    }
+
+    if resp.Status.Code != common_pb.Status_OK {
+        return fmt.Errorf("rename file failed: %s", resp.Status.Message)
+    }
+
+    c.cleanupChunkCache(old_filename)
+
+    return nil
+}
+
 func (c *Client) Delete(ctx context.Context, filename string) error {
     req := &client_pb.DeleteFileRequest{
         Filename: filename,
@@ -76,8 +108,11 @@ func (c *Client) Delete(ctx context.Context, filename string) error {
         return fmt.Errorf("delete file failed: %s", resp.Status.Message)
     }
 
+    c.cleanupChunkCache(filename)
+
     return nil
 }
+
 
 func (c *Client) GetChunkInfo(ctx context.Context, filename string, startIndex, endIndex int64) (map[int64]*client_pb.ChunkInfo, error) {
     results := make(map[int64]*client_pb.ChunkInfo)
