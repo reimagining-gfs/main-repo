@@ -15,12 +15,14 @@ const (
     OpAddChunk      = "ADD_CHUNK"
     OpUpdateChunk   = "UPDATE_CHUNK"
     OpDeleteChunk   = "DELETE_CHUNK"
+    OpRenameFile    = "RENAME_FILE"
 )
 
 type LogEntry struct {
     Timestamp   time.Time       `json:"timestamp"`
     Operation   string         `json:"operation"`
     Filename    string         `json:"filename,omitempty"`
+    NewFilename string         `json:"new_filename,omitempty"`
     ChunkHandle string         `json:"chunk_handle,omitempty"`
     Metadata    interface{}    `json:"metadata,omitempty"`
 }
@@ -109,6 +111,14 @@ func (m *Master) replayOperationLog() error {
         case OpDeleteFile:
             m.filesMu.Lock()
             delete(m.files, entry.Filename)
+            m.filesMu.Unlock()
+
+        case OpRenameFile:
+            m.filesMu.Lock()
+            if fileInfo, exists := m.files[entry.Filename]; exists {
+                m.files[entry.NewFilename] = fileInfo
+                delete(m.files, entry.Filename)
+            }
             m.filesMu.Unlock()
 
         case OpAddChunk:

@@ -474,3 +474,143 @@ func (cs *ChunkServer) ReadChunk(ctx context.Context, req *chunk_ops.ReadChunkRe
         Data: data,
     }, nil
 }
+
+func (cs *ChunkServer) ForwardReplicateChunk(ctx context.Context, req *chunkserver_pb.ForwardReplicateChunkRequest) (*chunkserver_pb.ForwardReplicateChunkResponse, error) {
+    chunkHandle := req.ChunkHandle.Handle
+    chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+    if _, err := os.Stat(chunkPath); os.IsNotExist(err) {
+        file, err := os.Create(chunkPath)
+        if err != nil {
+            return &chunkserver_pb.ForwardReplicateChunkResponse{
+                Status: &common_pb.Status{
+                    Code:    common_pb.Status_ERROR,
+                    Message: fmt.Sprintf("failed to create chunk file: %v", err),
+                },
+            }, nil
+        }
+        file.Close()
+    }
+
+    file, err := os.OpenFile(chunkPath, os.O_RDWR, 0644)
+    if err != nil {
+        return &chunkserver_pb.ForwardReplicateChunkResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: fmt.Sprintf("failed to open chunk file: %v", err),
+            },
+        }, nil
+    }
+    defer file.Close()
+
+    _, err = file.Write(req.Data)
+    if err != nil {
+        return &chunkserver_pb.ForwardReplicateChunkResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: fmt.Sprintf("failed to write data to chunk file: %v", err),
+            },
+        }, nil
+    }
+
+    computedChecksum := crc32.ChecksumIEEE(req.Data)
+    if computedChecksum != req.Checksum {
+        return &chunkserver_pb.ForwardReplicateChunkResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: "checksum mismatch",
+            },
+        }, nil
+    }
+
+    cs.mu.Lock()
+    cs.chunks[chunkHandle] = &ChunkMetadata{
+        Size:         int64(len(req.Data)),
+        LastModified: time.Now(),
+        Checksum:     computedChecksum,
+    }
+    cs.mu.Unlock()
+
+    return &chunkserver_pb.ForwardReplicateChunkResponse{
+        Status: &common_pb.Status{
+            Code:    common_pb.Status_OK,
+            Message: "chunk replicated successfully",
+        },
+    }, nil
+}
+
+func (cs *ChunkServer) forwardReplicateToSecondary(ctx context.Context, secondaryLocation *common_pb.ChunkLocation, chunkHandle string, data []byte, checksum uint32) error {
+    log.Print("Replicating to Secondary: ", secondaryLocation.ServerAddress)
+    conn, err := grpc.Dial(secondaryLocation.ServerAddress, grpc.WithInsecure(), grpc.WithBlock())
+    if err != nil {
+        return fmt.Errorf("failed to connect to secondary %s: %w", secondaryLocation.ServerAddress, err)
+    }
+    defer conn.Close()
+
+    client := chunkserver_pb.NewChunkServiceClient(conn)
+
+    forwardReplicateReq := &chunkserver_pb.ForwardReplicateChunkRequest{
+        ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+        Data:        data,
+        Checksum:    checksum,
+    }
+
+    _, err = client.ForwardReplicateChunk(ctx, forwardReplicateReq)
+    if err != nil {
+        return fmt.Errorf("failed to forward replicate to secondary %s: %w", secondaryLocation.ServerAddress, err)
+    }
+
+    log.Printf("Successfully forwarded replicate to secondary %s", secondaryLocation.ServerAddress)
+    return nil
+}
+
+func (cs *ChunkServer) handleReplicateChunk(operation *Operation) error {
+    chunkHandle := operation.ChunkHandle
+    chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+    file, err := os.Open(chunkPath)
+    if err != nil {
+        return fmt.Errorf("failed to open chunk file %s: %v", chunkHandle, err)
+    }
+    defer file.Close()
+
+    fileInfo, err := file.Stat()
+    if err != nil {
+        return fmt.Errorf("failed to get chunk file info for %s: %v", chunkHandle, err)
+    }
+
+    data := make([]byte, fileInfo.Size())
+    _, err = io.ReadFull(file, data)
+    if err != nil {
+        return fmt.Errorf("failed to read chunk data for %s: %v", chunkHandle, err)
+    }
+
+    checksum := crc32.ChecksumIEEE(data)
+
+    var wg sync.WaitGroup
+    errChan := make(chan error, len(operation.Secondaries))
+
+    for _, secondary := range operation.Secondaries {
+        wg.Add(1)
+        go func(location *common_pb.ChunkLocation) {
+            defer wg.Done()
+            if err := cs.forwardReplicateToSecondary(context.Background(), location, chunkHandle, data, checksum); err != nil {
+                errChan <- fmt.Errorf("failed to forward replicate to %s: %v", location.ServerAddress, err)
+            }
+        }(secondary)
+    }
+
+    wg.Wait()
+    close(errChan)
+
+    var errors []string
+    for err := range errChan {
+        errors = append(errors, err.Error())
+    }
+
+    if len(errors) > 0 {
+        return fmt.Errorf("one or more secondaries failed to process the replicate operation: %v", errors)
+    }
+
+    return nil
+}

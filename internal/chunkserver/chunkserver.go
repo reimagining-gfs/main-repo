@@ -263,6 +263,9 @@ func (cs *ChunkServer) handleChunkCommand(cmd *chunk_pb.ChunkCommand) error {
     case chunk_pb.ChunkCommand_BECOME_PRIMARY:
         return cs.handleBecomePrimary(cmd)
     
+    case chunk_pb.ChunkCommand_REPLICATE:
+        return cs.handleReplicate(cmd)
+    
     case chunk_pb.ChunkCommand_NONE:
         return nil
     
@@ -303,6 +306,32 @@ func (cs *ChunkServer) handleInitEmpty(cmd *chunk_pb.ChunkCommand) error {
     return nil
 }
 
+func (cs *ChunkServer) handleReplicate(cmd *chunk_pb.ChunkCommand) error {
+    if cmd.ChunkHandle == nil {
+        return fmt.Errorf("received replicate command with nil chunk handle")
+    }
+
+    chunkHandle := cmd.ChunkHandle.Handle
+    
+    operation := &Operation{
+        OperationId:  fmt.Sprintf("replicate-%s-%d", chunkHandle, time.Now().UnixNano()),
+        Type:         OpReplicate,
+        ChunkHandle:  chunkHandle,
+        Secondaries:  cmd.TargetLocations,
+        ResponseChan: make(chan OperationResult),
+    }
+
+    cs.operationQueue.Push(operation)
+
+    result := <-operation.ResponseChan
+    if result.Error != nil {
+        return fmt.Errorf("replication failed: %v", result.Error)
+    }
+
+    log.Printf("Successfully queued replication for chunk: %s", chunkHandle)
+    return nil
+}
+
 func (cs *ChunkServer) handleBecomePrimary(cmd *chunk_pb.ChunkCommand) error {
     if cmd.ChunkHandle == nil {
         return fmt.Errorf("received become primary command with nil chunk handle")
@@ -335,7 +364,6 @@ func (cs *ChunkServer) handleBecomePrimary(cmd *chunk_pb.ChunkCommand) error {
     }
     cs.mu.Unlock()
 
-    // Acquire the lease for the chunk
     cs.mu.Lock()
     cs.leases[chunkHandle] = time.Now().Add(time.Duration(cs.config.Server.LeaseTimeout) * time.Second)
     cs.chunkPrimary[chunkHandle] = true
@@ -415,6 +443,28 @@ func (cs * ChunkServer) processOperations() {
                     Status: common_pb.Status{
                         Code:    common_pb.Status_OK,
                         Message: "Write operation succeeded",
+                    },
+                    Error: nil,
+                }
+            }
+
+        case OpReplicate:
+            log.Print("Handling Replication")
+            err := cs.handleReplicateChunk(operation)
+
+            if err != nil {
+                operation.ResponseChan <- OperationResult{
+                    Status: common_pb.Status{
+                        Code:    common_pb.Status_ERROR,
+                        Message: err.Error(),
+                    },
+                    Error: err,
+                }
+            } else {
+                operation.ResponseChan <- OperationResult{
+                    Status: common_pb.Status{
+                        Code:    common_pb.Status_OK,
+                        Message: "Replicate operation succeeded",
                     },
                     Error: nil,
                 }

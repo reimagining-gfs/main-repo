@@ -131,6 +131,13 @@ func processCommand(input string) bool {
 		}
 		handleCreate(ctx, args[1])
 
+	case "rename":
+		if len(args) < 3 {
+			color.Red("Usage: rename <old_filename> <new_filename>")
+			return true
+		}
+		handleRename(ctx, args[1], args[2])
+
 	case "delete":
 		if len(args) < 2 {
 			color.Red("Usage: delete <filename>")
@@ -189,9 +196,6 @@ func processCommand(input string) bool {
 		data := strings.Join(args[2:], " ")
         handlePushData(ctx, args[1], data)
 
-	case "ls":
-		handleList(ctx)
-
 	default:
 		color.Red("Unknown command: %s", cmd)
 	}
@@ -203,6 +207,7 @@ func printHelp() {
 	color.Cyan("Available Commands:")
 	fmt.Println("  create <filename>                           - Create a new file")
 	fmt.Println("  delete <filename>                           - Delete a file")
+	fmt.Println("  rename <old_filename> <new_filename>        - Rename a file")
 	fmt.Println("  read <filename> <offset> <length> - Read file contents")
 	fmt.Println("  write <filename> <offset> <data> - Write content to a file")
 	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
@@ -219,6 +224,15 @@ func handleCreate(ctx context.Context, filename string) {
 		return
 	}
 	color.Green("File created successfully: %s", filename)
+}
+
+func handleRename(ctx context.Context, old_filename string, new_filename string) {
+	err := gfsClient.Rename(ctx, old_filename, new_filename)
+	if err != nil {
+		color.Red("Failed to rename file: %v", err)
+		return
+	}
+	color.Green("File %s renamed successfully to: %s", old_filename, new_filename)
 }
 
 func handleDelete(ctx context.Context, filename string) {
@@ -250,11 +264,6 @@ func handleWrite(ctx context.Context, filename string, offset int64, content str
         return
     }
     color.Green("Successfully wrote %d bytes to file", written)
-}
-
-func handleList(ctx context.Context) {
-	// TODO: Implement listing functionality when available in the master
-	color.Yellow("Listing functionality not implemented yet")
 }
 
 func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk int64) {

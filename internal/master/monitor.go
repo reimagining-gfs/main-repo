@@ -30,7 +30,7 @@ func (m *Master) monitorServerHealth() {
 }
 
 func (m *Master) monitorChunkReplication() {
-    ticker := time.NewTicker(30 * time.Second)
+    ticker := time.NewTicker(120 * time.Second)
     for range ticker.C {
         m.chunksMu.RLock()
         for chunkHandle, chunkInfo := range m.chunks {
