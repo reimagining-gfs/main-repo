@@ -363,8 +363,7 @@ func (s *MasterServer) generateChunkCommands(serverId string) []*chunk_pb.ChunkC
     if exists {
         var remainingOps []*PendingOperation
         for _, op := range pendingOps {
-            if time.Since(op.LastAttempt) < time.Second*5 {
-                remainingOps = append(remainingOps, op)
+            if op.AttemptCount > 0 {
                 continue
             }
 
@@ -376,7 +375,10 @@ func (s *MasterServer) generateChunkCommands(serverId string) []*chunk_pb.ChunkC
             if op.Type == chunk_pb.ChunkCommand_REPLICATE {
                 command.TargetLocations = make([]*common_pb.ChunkLocation, len(op.Targets))
                 for i, target := range op.Targets {
-                    command.TargetLocations[i] = &common_pb.ChunkLocation{ServerId: target}
+                    command.TargetLocations[i] = &common_pb.ChunkLocation{
+                        ServerId: target,
+                        ServerAddress: s.Master.servers[target].Address,
+                    }
                 }
             }
 

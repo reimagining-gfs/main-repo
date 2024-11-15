@@ -71,6 +71,7 @@ type OperationType int
 const (
     OpWrite OperationType = iota
     OpRead
+    OpReplicate
 )
 
 type OperationResult struct {

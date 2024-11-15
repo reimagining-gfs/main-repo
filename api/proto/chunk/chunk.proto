@@ -9,6 +9,7 @@ import "api/proto/common/common.proto";
 service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
 
     // [TODO]: Primary -> Secondary: Serialized record append operations
 }
@@ -34,5 +35,15 @@ message ForwardWriteRequest {
 }
 
 message ForwardWriteResponse {
+    common.Status status = 1;
+}
+
+message ForwardReplicateChunkRequest {
+    common.ChunkHandle chunk_handle = 1;
+    bytes data = 2;
+    uint32 checksum = 3;
+}
+
+message ForwardReplicateChunkResponse {
     common.Status status = 1;
 }
