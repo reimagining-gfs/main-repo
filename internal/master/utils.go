@@ -119,12 +119,20 @@ func (s *MasterServer) updateServerStatus(serverId string, req *chunk_pb.HeartBe
     serverInfo.Status = "ACTIVE"
     serverInfo.FailureCount = 0
 
+    log.Print("Updating server status 1")
     // Update chunk information
     s.Master.chunksMu.Lock()
     defer s.Master.chunksMu.Unlock()
 
     for _, chunkStatus := range req.Chunks {
+        log.Print("Updating server status 2")
         chunkHandle := chunkStatus.ChunkHandle.Handle
+        s.Master.deletedChunksMu.Lock()
+        if _, exists := s.Master.deletedChunks[chunkHandle]; exists {
+            s.Master.deletedChunksMu.Unlock()
+            continue
+        }
+        s.Master.deletedChunksMu.Unlock()
         if _, exists := s.Master.chunks[chunkHandle]; !exists {
             s.Master.chunks[chunkHandle] = &ChunkInfo{
                 Size:      chunkStatus.Size,
@@ -399,8 +407,6 @@ func (s *MasterServer) generateChunkCommands(serverId string) []*chunk_pb.ChunkC
     return commands
 }
 
-
-// Add garbage collection related methods
 func (m *Master) runGarbageCollection() {
     ticker := time.NewTicker(time.Duration(m.Config.Deletion.GCInterval) * time.Second)
     for range ticker.C {
@@ -414,7 +420,6 @@ func (m *Master) runGarbageCollection() {
 
         log.Printf("Starting garbage collection cycle")
         
-        // Get list of files to process
         filesToProcess := m.getExpiredDeletedFiles()
         
         // Process files in batches
@@ -438,14 +443,38 @@ func (m *Master) runGarbageCollection() {
 
 func (m *Master) getExpiredDeletedFiles() []string {
     var expiredFiles []string
-    cutoffTime := time.Now().Add(-time.Duration(m.Config.Deletion.RetentionPeriod) * time.Second)
+    cutoffTime, err := time.Parse("2006-01-02T15:04:05", time.Now().Add(-time.Duration(m.Config.Deletion.RetentionPeriod)*time.Second).Format("2006-01-02T15:04:05"))
+    if err != nil {
+        log.Printf("Error parsing cutoff time: %v", err)
+        return expiredFiles
+    }
+
+    m.filesMu.RLock()
+    defer m.filesMu.RUnlock()
     
-    m.deletedFilesMu.RLock()
-    defer m.deletedFilesMu.RUnlock()
-    
-    for deletedPath, info := range m.deletedFiles {
-        if info.DeleteTime.Before(cutoffTime) {
-            expiredFiles = append(expiredFiles, deletedPath)
+    for deletedPath, _ := range m.files {
+        // log.Print("In loop")
+        if strings.HasPrefix(deletedPath, m.Config.Deletion.TrashDirPrefix) {
+            // log.Print("Prefix verified")
+            parts := strings.Split(strings.TrimPrefix(deletedPath, m.Config.Deletion.TrashDirPrefix), "_")
+            if len(parts) != 2 {
+                log.Printf("Error parsing delete time from path %s: unexpected format", deletedPath)
+                continue
+            }
+            deleteTime, err := time.Parse("2006-01-02T15:04:05", parts[1])
+            if err != nil {
+                log.Printf("Error parsing delete time from path %s: %v", deletedPath, err)
+                continue
+            }
+            
+            // log.Print(cutoffTime)
+            // log.Print(deleteTime)
+            // log.Print(deleteTime.Before(cutoffTime))
+
+            if deleteTime.Before(cutoffTime) {
+                // log.Print("Time verified")
+                expiredFiles = append(expiredFiles, deletedPath)
+            }
         }
     }
     
@@ -453,43 +482,39 @@ func (m *Master) getExpiredDeletedFiles() []string {
 }
 
 func (m *Master) processGCBatch(deletedPaths []string) {
+    m.filesMu.Lock()
+    defer m.filesMu.Unlock()
+
     for _, deletedPath := range deletedPaths {
-        m.deletedFilesMu.Lock()
-        fileInfo, exists := m.deletedFiles[deletedPath]
+        log.Print("Processing")
+        fileInfo, exists := m.files[deletedPath]
         if !exists {
-            m.deletedFilesMu.Unlock()
             continue
         }
         
-        // Collect chunks to delete
         chunksToDelete := make([]string, 0)
-        fileInfo.FileInfo.mu.RLock()
-        for _, chunkHandle := range fileInfo.FileInfo.Chunks {
+        for _, chunkHandle := range fileInfo.Chunks {
             chunksToDelete = append(chunksToDelete, chunkHandle)
         }
-        fileInfo.FileInfo.mu.RUnlock()
         
-        // Remove from deleted files map
-        delete(m.deletedFiles, deletedPath)
-        m.deletedFilesMu.Unlock()
-        
-        // Clean up chunks
         m.chunksMu.Lock()
+        defer m.chunksMu.Unlock()
         for _, chunkHandle := range chunksToDelete {
             if chunkInfo, exists := m.chunks[chunkHandle]; exists {
                 chunkInfo.mu.Lock()
-                // Send delete commands to all chunk servers
                 for serverId := range chunkInfo.Locations {
                     m.sendDeleteChunkCommand(serverId, chunkHandle)
                 }
                 chunkInfo.mu.Unlock()
+                m.deletedChunksMu.Lock()
+                m.deletedChunks[chunkHandle] = true
+                m.deletedChunksMu.Unlock()
                 delete(m.chunks, chunkHandle)
             }
         }
-        m.chunksMu.Unlock()
+        delete(m.files, deletedPath)
         
-        log.Printf("GC: Permanently deleted file %s and its %d chunks", 
-            fileInfo.OriginalPath, len(chunksToDelete))
+        log.Printf("GC: Permanently deleted file %s and its %d chunks", deletedPath, len(chunksToDelete))
     }
 }
 
@@ -521,14 +546,22 @@ func (s *MasterServer) validateFilename(filename string) error {
         return ErrInvalidFileName
     }
 
-    if !validatePath(filename) {
+    if !s.Master.validatePath(filename) {
         return ErrInvalidFileName
     }
 
     return nil
 }
 
-func validatePath(filepath string) bool {
+func (m *Master) validatePath(filepath string) bool {
+    if strings.HasPrefix(filepath, m.Config.Deletion.TrashDirPrefix) {
+        // Split on underscore to separate path from timestamp
+        parts := strings.SplitN(strings.TrimPrefix(filepath, m.Config.Deletion.TrashDirPrefix), "_", 2)
+        if len(parts) == 2 {
+            filepath = parts[0]
+        }
+    }
+
     cleaned := path.Clean(filepath)
     
     if path.IsAbs(cleaned) || strings.Contains(cleaned, "..") || strings.Contains(cleaned, "./") {
