@@ -119,13 +119,11 @@ func (s *MasterServer) updateServerStatus(serverId string, req *chunk_pb.HeartBe
     serverInfo.Status = "ACTIVE"
     serverInfo.FailureCount = 0
 
-    log.Print("Updating server status 1")
     // Update chunk information
     s.Master.chunksMu.Lock()
     defer s.Master.chunksMu.Unlock()
 
     for _, chunkStatus := range req.Chunks {
-        log.Print("Updating server status 2")
         chunkHandle := chunkStatus.ChunkHandle.Handle
         s.Master.deletedChunksMu.Lock()
         if _, exists := s.Master.deletedChunks[chunkHandle]; exists {

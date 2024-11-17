@@ -98,6 +98,30 @@ func (cs *ChunkServer) PushDataToPrimary(ctx context.Context, req *chunk_ops.Pus
     }, nil
 }
 
+func (cs *ChunkServer) updateChunkMetadata(chunkHandle string, data []byte, offset int64, version int32) {
+    cs.mu.Lock()
+    defer cs.mu.Unlock()
+
+    metadata, exists := cs.chunks[chunkHandle]
+    if !exists {
+        metadata = &ChunkMetadata{
+            Size:         offset + int64(len(data)),
+            LastModified: time.Now(),
+            Checksum:     crc32.ChecksumIEEE(data),
+            Version:      version,
+        }
+    } else {
+        // Update existing metadata
+        if offset+int64(len(data)) > metadata.Size {
+            metadata.Size = offset + int64(len(data))
+        }
+        metadata.LastModified = time.Now()
+        metadata.Checksum = crc32.ChecksumIEEE(data)
+        metadata.Version = version
+    }
+    cs.chunks[chunkHandle] = metadata
+}
+
 func (cs *ChunkServer) storePendingData(operationID, chunkHandle string, data []byte, checksum uint32, offset int64) {
     cs.pendingDataLock.Lock()
     defer cs.pendingDataLock.Unlock()
@@ -194,6 +218,16 @@ func (cs *ChunkServer) getPendingData(operationID, chunkHandle string) []byte {
     return nil
 }
 
+func (cs *ChunkServer) getPendingDataOffset(operationID, chunkHandle string) uint32 {
+    cs.pendingDataLock.RLock()
+    defer cs.pendingDataLock.RUnlock()
+
+    if chunkData, exists := cs.pendingData[operationID][chunkHandle]; exists {
+        return chunkData.Checksum
+    }
+    return 0
+}
+
 func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunkRequest) (*chunk_ops.WriteChunkResponse, error) {
     operation := &Operation{
         OperationId:  req.OperationId,
@@ -201,7 +235,7 @@ func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunk
         ChunkHandle:  req.ChunkHandle.Handle,
         Offset:       req.Offset,
         Data:         cs.getPendingData(req.OperationId, req.ChunkHandle.Handle),
-        Checksum:     0,
+        Checksum:     cs.getPendingDataOffset(req.OperationId, req.ChunkHandle.Handle),
         Secondaries:  req.Secondaries,
         ResponseChan: make(chan OperationResult, 1),
     }
@@ -237,8 +271,8 @@ func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunk
 }
 
 func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_pb.ForwardWriteRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
-    data := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
-    if data == nil {
+    pendingData := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
+    if pendingData == nil {
         return &chunkserver_pb.ForwardWriteResponse{
             Status: &common_pb.Status{
                 Code:    common_pb.Status_ERROR,
@@ -246,6 +280,8 @@ func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_p
             },
         }, nil
     }
+
+    data := pendingData
 
     if req.Offset+int64(len(data)) > cs.config.Storage.MaxChunkSize {
         return &chunkserver_pb.ForwardWriteResponse{
@@ -270,6 +306,33 @@ func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_p
     }
     defer file.Close()
 
+    // Get current file size
+    fileInfo, err := file.Stat()
+    if err != nil {
+        return &chunkserver_pb.ForwardWriteResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: "Failed to get file info: " + err.Error(),
+            },
+        }, nil
+    }
+
+    // If write offset is beyond current file size, pad with nulls
+    if req.Offset > fileInfo.Size() {
+        paddingSize := req.Offset - fileInfo.Size()
+        padding := make([]byte, paddingSize)
+        
+        // Write padding at the end of current file
+        if _, err := file.WriteAt(padding, fileInfo.Size()); err != nil {
+            return &chunkserver_pb.ForwardWriteResponse{
+                Status: &common_pb.Status{
+                    Code:    common_pb.Status_ERROR,
+                    Message: "Failed to write padding: " + err.Error(),
+                },
+            }, nil
+        }
+    }
+
     if _, err := file.WriteAt(data, req.Offset); err != nil {
         return &chunkserver_pb.ForwardWriteResponse{
             Status: &common_pb.Status{
@@ -278,6 +341,10 @@ func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_p
             },
         }, nil
     }
+
+    // Update metadata using version from request
+    cs.updateChunkMetadata(chunkHandle, data, req.Offset, req.Version)
+
     return &chunkserver_pb.ForwardWriteResponse{
         Status: &common_pb.Status{
             Code:    common_pb.Status_OK,
@@ -299,6 +366,7 @@ func (cs *ChunkServer) forwardWriteToSecondary(ctx context.Context, secondaryLoc
         OperationId: operation.OperationId,
         ChunkHandle: &common_pb.ChunkHandle{Handle: operation.ChunkHandle},
         Offset:      operation.Offset,
+        Version:     cs.chunks[operation.ChunkHandle].Version,
     }
 
     _, err = client.ForwardWriteChunk(ctx, forwardWriteReq)
@@ -330,12 +398,49 @@ func (cs *ChunkServer) handleWrite(operation *Operation) error {
     }
     defer file.Close()
 
+    // Get current file size
+    fileInfo, err := file.Stat()
+    if err != nil {
+        return fmt.Errorf("failed to get file info: %w", err)
+    }
+
+    // If write offset is beyond current file size, pad with nulls
+    if operation.Offset > fileInfo.Size() {
+        paddingSize := operation.Offset - fileInfo.Size()
+        padding := make([]byte, paddingSize)
+        
+        // Write padding at the end of current file
+        if _, err := file.WriteAt(padding, fileInfo.Size()); err != nil {
+            return fmt.Errorf("failed to write padding: %w", err)
+        }
+    }
+
+    // Write actual data at specified offset
     if _, err := file.WriteAt(data, operation.Offset); err != nil {
         return fmt.Errorf("failed to write data to chunk file: %w", err)
     }
 
     log.Println("Data written successfully to primary")
 
+    cs.mu.Lock()
+    if metadata, exists := cs.chunks[operation.ChunkHandle]; exists {
+        metadata.LastModified = time.Now()
+        metadata.Checksum = operation.Checksum
+        newSize := operation.Offset + int64(len(operation.Data))
+        if newSize > metadata.Size {
+            metadata.Size = newSize
+        }
+    } else {
+        cs.chunks[operation.ChunkHandle] = &ChunkMetadata{
+            Size:         operation.Offset + int64(len(operation.Data)),
+            LastModified: time.Now(),
+            Checksum:     operation.Checksum,
+            Version:      0,
+        }
+    }
+    cs.mu.Unlock()
+
+    // Forward to secondaries
     var wg sync.WaitGroup
     errorChan := make(chan error, len(operation.Secondaries))
 
@@ -528,6 +633,7 @@ func (cs *ChunkServer) ForwardReplicateChunk(ctx context.Context, req *chunkserv
         Size:         int64(len(req.Data)),
         LastModified: time.Now(),
         Checksum:     computedChecksum,
+        Version:      req.Version,
     }
     cs.mu.Unlock()
 
@@ -553,6 +659,7 @@ func (cs *ChunkServer) forwardReplicateToSecondary(ctx context.Context, secondar
         ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
         Data:        data,
         Checksum:    checksum,
+        Version:     cs.chunks[chunkHandle].Version,
     }
 
     _, err = client.ForwardReplicateChunk(ctx, forwardReplicateReq)
