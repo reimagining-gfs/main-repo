@@ -5,6 +5,7 @@ option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common
 
 message ChunkHandle {
     string handle = 1;
+    int32 version = 2;
 }
 
 message ChunkLocation {

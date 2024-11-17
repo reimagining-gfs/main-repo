@@ -61,6 +61,12 @@ func NewChunkServer(serverID, address string, config *Config) (*ChunkServer, err
 		}
 	}()
 
+    if err := cs.RecoverMetadata(); err != nil {
+        log.Printf("Warning: Failed to recover metadata: %v", err)
+    }
+    
+    cs.StartMetadataCheckpointing(5 * time.Minute)
+
 	return cs, nil
 }
 
@@ -102,8 +108,11 @@ func (cs *ChunkServer) scanChunks() ([]*common_pb.ChunkHandle, error) {
     cs.mu.Lock()
     defer cs.mu.Unlock()
 
-    cs.chunks = make(map[string]*ChunkMetadata)
-    
+    if err := cs.loadMetadata(); err != nil {
+        log.Printf("Failed to load metadata from stable storage: %v", err)
+        cs.chunks = make(map[string]*ChunkMetadata)
+    }
+
     files, err := os.ReadDir(cs.serverDir)
     if err != nil {
         return nil, fmt.Errorf("failed to read server directory: %v", err)
@@ -116,33 +125,26 @@ func (cs *ChunkServer) scanChunks() ([]*common_pb.ChunkHandle, error) {
             continue
         }
 
-        // Extract chunk handle from filename
         handle := strings.TrimSuffix(file.Name(), ".chunk")
         
-        // Get file info for metadata
-        // info, err := file.Info()
-        // if err != nil {
-        //     log.Printf("Error getting info for chunk %s: %v", handle, err)
-        //     continue
-        // }
+        // If metadata doesn't exist for this chunk, create it
+        if _, exists := cs.chunks[handle]; !exists {
+            cs.chunks[handle] = &ChunkMetadata{
+                Size:         0,
+                LastModified: time.Now(),
+                Version:      1,
+            }
+        }
 
-        // // Read chunk metadata if exists
-        // metadata, err := cs.readChunkMetadata(handle)
-        // if err != nil {
-        //     log.Printf("Error reading metadata for chunk %s: %v", handle, err)
-        //     // Create default metadata if none exists
-        //     metadata = &ChunkMetadata{
-        //         Size:    info.Size(),
-        //         LastModified: info.ModTime(),
-        //     }
-        // }
-
-        // cs.chunks[handle] = metadata
-        chunks = append(chunks, &common_pb.ChunkHandle{Handle: handle})
+        chunks = append(chunks, &common_pb.ChunkHandle{
+            Handle: handle, 
+            Version: cs.chunks[handle].Version,
+        })
     }
 
     return chunks, nil
 }
+
 
 func (cs *ChunkServer) reportChunks() error {
     ctx := context.Background()
@@ -221,16 +223,17 @@ func (cs *ChunkServer) buildHeartbeatRequest() *chunk_pb.HeartBeatRequest {
         chunks = append(chunks, &chunk_pb.ChunkStatus{
             ChunkHandle: &common_pb.ChunkHandle{Handle: handle},
             Size:       meta.Size,
+            Version:    meta.Version,
         })
     }
 
     return &chunk_pb.HeartBeatRequest{
         ServerAddress:    cs.address,
-        ServerId:         cs.serverID,
-        Timestamp:        time.Now().Format(time.RFC3339),
-        Chunks:           chunks,
-        AvailableSpace:   cs.availableSpace,
-        CpuUsage:        0.0, // TODO: Implement CPU usage monitoring
+        ServerId:        cs.serverID,
+        Timestamp:       time.Now().Format(time.RFC3339),
+        Chunks:          chunks,
+        AvailableSpace:  cs.availableSpace,
+        CpuUsage:        0.0,
         ActiveOperations: int32(cs.operationQueue.Len()),
     }
 }
@@ -321,6 +324,9 @@ func (cs *ChunkServer) handleChunkCommand(cmd *chunk_pb.ChunkCommand) error {
 
     case chunk_pb.ChunkCommand_DELETE:
         return cs.handleDelete(cmd)
+
+    case chunk_pb.ChunkCommand_UPDATE_VERSION:
+        return cs.handleUpdateVersion(cmd)
     
     case chunk_pb.ChunkCommand_NONE:
         return nil
@@ -355,10 +361,43 @@ func (cs *ChunkServer) handleInitEmpty(cmd *chunk_pb.ChunkCommand) error {
     cs.chunks[chunkHandle] = &ChunkMetadata{
         Size:         0,
         LastModified: time.Now(),
+        Version:      0,
     }
     cs.mu.Unlock()
 
-    log.Printf("Created new empty chunk: %s", chunkHandle)
+    // Save metadata to stable storage
+    if err := cs.saveMetadata(); err != nil {
+        return fmt.Errorf("failed to save metadata after chunk creation: %v", err)
+    }
+
+    log.Printf("Created new empty chunk: %s with version 1", chunkHandle)
+    return nil
+}
+
+func (cs *ChunkServer) handleUpdateVersion(cmd *chunk_pb.ChunkCommand) error {
+    if cmd.ChunkHandle == nil {
+        return fmt.Errorf("received update version command with nil chunk handle")
+    }
+
+    chunkHandle := cmd.ChunkHandle.Handle
+    
+    cs.mu.Lock()
+    defer cs.mu.Unlock()
+
+    metadata, exists := cs.chunks[chunkHandle]
+    if !exists {
+        return fmt.Errorf("chunk %s does not exist", chunkHandle)
+    }
+
+    metadata.Version = cmd.Version
+    metadata.LastModified = time.Now()
+
+    // Save metadata to stable storage
+    if err := cs.saveMetadata(); err != nil {
+        return fmt.Errorf("failed to save metadata after version update: %v", err)
+    }
+
+    log.Printf("Updated chunk %s version to %d", chunkHandle, cmd.Version)
     return nil
 }
 

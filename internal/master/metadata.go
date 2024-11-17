@@ -16,10 +16,21 @@ func (m *Master) LoadMetadata(path string) error {
             return err
         }
         log.Printf("Metadata file doesn't exist, starting with empty state.")
+        // Initialize empty maps if metadata file doesn't exist
+        m.filesMu.Lock()
+        m.chunksMu.Lock()
+        if m.files == nil {
+            m.files = make(map[string]*FileInfo)
+        }
+        if m.chunks == nil {
+            m.chunks = make(map[string]*ChunkInfo)
+        }
+        m.filesMu.Unlock()
+        m.chunksMu.Unlock()
     } else if len(data) > 0 {
         var metadata struct {
-            Files  map[string]*FileInfo
-            Chunks map[string]*ChunkInfo
+            Files  map[string]*FileInfo                `json:"files"`
+            Chunks map[string]*ChunkInfo         `json:"chunks"`
         }
 
         if err := json.Unmarshal(data, &metadata); err != nil {
@@ -28,8 +39,29 @@ func (m *Master) LoadMetadata(path string) error {
 
         m.filesMu.Lock()
         m.chunksMu.Lock()
+        
+        // Initialize maps if they're nil
+        if m.files == nil {
+            m.files = make(map[string]*FileInfo)
+        }
+        if m.chunks == nil {
+            m.chunks = make(map[string]*ChunkInfo)
+        }
+
+        // Copy files data directly
         m.files = metadata.Files
-        m.chunks = metadata.Chunks
+
+        // Convert stored chunk info to full chunk info
+        for chunkID, storedInfo := range metadata.Chunks {
+            m.chunks[chunkID] = &ChunkInfo{
+                Size:            storedInfo.Size,
+                Version:        storedInfo.Version,
+                Locations:      make(map[string]bool),
+                ServerAddresses: make(map[string]string),
+                StaleReplicas:  make(map[string]bool),
+            }
+        }
+
         m.filesMu.Unlock()
         m.chunksMu.Unlock()
     }
@@ -41,12 +73,20 @@ func (m *Master) checkpointMetadata() error {
     m.filesMu.RLock()
     m.chunksMu.RLock()
 
+    storedChunks := make(map[string]*ChunkInfo)
+    for chunkID, chunk := range m.chunks {
+        storedChunks[chunkID] = &ChunkInfo{
+            Size:    chunk.Size,
+            Version: chunk.Version,
+        }
+    }
+
     metadata := struct {
-        Files  map[string]*FileInfo  `json:"files"`
+        Files  map[string]*FileInfo      `json:"files"`
         Chunks map[string]*ChunkInfo `json:"chunks"`
     }{
         Files:  m.files,
-        Chunks: m.chunks,
+        Chunks: storedChunks,
     }
 
     data, err := json.MarshalIndent(metadata, "", "  ")
@@ -62,12 +102,10 @@ func (m *Master) checkpointMetadata() error {
         return fmt.Errorf("failed to write temporary metadata file: %v", err)
     }
 
-    // Atomically rename temporary file to actual metadata file
     if err := os.Rename(tempFile, m.Config.Metadata.Database.Path); err != nil {
         return fmt.Errorf("failed to rename metadata file: %v", err)
     }
 
-    // After successful checkpoint, truncate the operation log
     m.opLog.mu.Lock()
     defer m.opLog.mu.Unlock()
 

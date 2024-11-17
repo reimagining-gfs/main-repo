@@ -16,6 +16,7 @@ message ChunkInfo {
     common.ChunkHandle chunk_handle = 1;
     common.ChunkLocation primary_location = 2;
     repeated common.ChunkLocation secondary_locations = 3;
+    int32 version = 4;
 }
 
 message GetFileChunksInfoRequest {

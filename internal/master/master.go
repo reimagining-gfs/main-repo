@@ -145,15 +145,26 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
         chunkHandle := chunk.Handle
         if _, exists := s.Master.chunks[chunkHandle]; !exists {
             s.Master.chunks[chunkHandle] = &ChunkInfo{
+                mu:        sync.RWMutex{},
                 Locations: make(map[string]bool),
                 ServerAddresses: make(map[string]string),
+                Version:         0,
+                StaleReplicas:   make(map[string]bool),
             }
         }
-        
-        s.Master.chunks[chunkHandle].mu.Lock()
-        s.Master.chunks[chunkHandle].Locations[req.ServerId] = true
-        s.Master.chunks[chunkHandle].ServerAddresses[req.ServerId] = req.ServerAddress
-        s.Master.chunks[chunkHandle].mu.Unlock()
+
+        chunkInfo := s.Master.chunks[chunkHandle]
+        chunkInfo.mu.Lock()
+
+        if chunk.Version < chunkInfo.Version {
+            chunkInfo.StaleReplicas[req.ServerId] = true
+            s.scheduleStaleReplicaDelete(chunkHandle, req.ServerId)
+        } else {
+            delete(chunkInfo.StaleReplicas, req.ServerId)
+            chunkInfo.Locations[req.ServerId] = true
+            chunkInfo.ServerAddresses[req.ServerId] = req.ServerAddress
+        }
+        chunkInfo.mu.Unlock()
 
         serverInfo.mu.Lock()
         serverInfo.Chunks[chunkHandle] = true
@@ -209,6 +220,17 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
     chunkInfo.mu.Lock()
     defer chunkInfo.mu.Unlock()
 
+    // Check if the requesting server has the latest version
+    if staleVersion, isStale := chunkInfo.StaleReplicas[req.ServerId]; isStale {
+        return &chunk_pb.RequestLeaseResponse{
+            Status: &common_pb.Status{
+                Code:    common_pb.Status_ERROR,
+                Message: fmt.Sprintf("server has stale version %d (current: %d)", staleVersion, chunkInfo.Version),
+            },
+            Granted: false,
+        }, nil
+    }
+    
     // Check if the requesting server is the current primary
     if chunkInfo.Primary != req.ServerId {
         return &chunk_pb.RequestLeaseResponse{
@@ -222,6 +244,35 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
 
     // Extend the lease
     chunkInfo.LeaseExpiration = time.Now().Add(time.Duration(s.Master.Config.Lease.LeaseTimeout) * time.Second)
+    newVersion := chunkInfo.Version + 1
+
+    updateCommand := &chunk_pb.ChunkCommand{
+        Type: chunk_pb.ChunkCommand_UPDATE_VERSION,
+        ChunkHandle: &common_pb.ChunkHandle{
+            Handle: req.ChunkHandle.Handle,
+        },
+        Version: newVersion,
+    }
+
+    s.Master.chunkServerMgr.mu.RLock()
+    for serverId := range chunkInfo.Locations {
+        if responseChan, exists := s.Master.chunkServerMgr.activeStreams[serverId]; exists {
+            response := &chunk_pb.HeartBeatResponse{
+                Status:   &common_pb.Status{Code: common_pb.Status_OK},
+                Commands: []*chunk_pb.ChunkCommand{updateCommand},
+            }
+
+            select {
+            case responseChan <- response:
+                log.Printf("Sent version update command to server %s for chunk %s (version %d)", 
+                    serverId, req.ChunkHandle.Handle, newVersion)
+                s.Master.incrementChunkVersion(chunkInfo)
+            default:
+                log.Printf("Warning: Failed to send version update to server %s (channel full)", serverId)
+            }
+        }
+    }
+    s.Master.chunkServerMgr.mu.RUnlock()
 
     log.Print("Extending: ", req.ServerId)
 
@@ -229,6 +280,7 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
         Status:          &common_pb.Status{Code: common_pb.Status_OK},
         Granted:         true,
         LeaseExpiration: chunkInfo.LeaseExpiration.Unix(),
+        Version:         chunkInfo.Version,
     }, nil
 }
 
@@ -352,10 +404,17 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
                 mu:        sync.RWMutex{},
                 Locations: make(map[string]bool),
                 ServerAddresses: make(map[string]string),
+                Version:         0,
+                StaleReplicas:   make(map[string]bool),
             }
             s.Master.chunks[chunkHandle] = chunkInfo
 
-            if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
+            metadata := map[string]interface{}{
+                "chunk_info": chunkInfo,
+                "file_index": idx,
+            }
+
+            if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, metadata); err != nil {
                 log.Printf("Failed to log chunk creation: %v", err)
             }
             

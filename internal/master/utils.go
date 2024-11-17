@@ -315,6 +315,66 @@ func (m *Master) selectReplicationTargets(chunkHandle string, count int) []*comm
     return targets
 }
 
+func (s *MasterServer) selectInitialChunkServers() []string {
+    var desiredReplicas = s.Master.Config.Replication.Factor
+
+    s.Master.serversMu.RLock()
+    defer s.Master.serversMu.RUnlock()
+
+    type serverLoad struct {
+        id       string
+        activeOps int32
+    }
+    
+    // Collect all active servers
+    var activeServers []serverLoad
+    for serverId, server := range s.Master.servers {
+        server.mu.RLock()
+        if server.Status == "ACTIVE" {
+            activeServers = append(activeServers, serverLoad{
+                id:        serverId,
+                activeOps: server.ActiveOps,
+            })
+        }
+        server.mu.RUnlock()
+    }
+
+    // Sort servers by load (activeOps)
+    sort.Slice(activeServers, func(i, j int) bool {
+        return activeServers[i].activeOps < activeServers[j].activeOps
+    })
+
+    // Select the least loaded servers up to desiredReplicas
+    selectedServers := make([]string, 0, desiredReplicas)
+    for i := 0; i < len(activeServers) && i < desiredReplicas; i++ {
+        selectedServers = append(selectedServers, activeServers[i].id)
+    }
+
+    return selectedServers
+}
+
+func (cm *ChunkServerManager) SendCommandToServer(serverId string, command *chunk_pb.ChunkCommand) error {
+    cm.mu.RLock()
+    stream, exists := cm.activeStreams[serverId]
+    cm.mu.RUnlock()
+
+    if !exists {
+        return fmt.Errorf("no active stream for server %s", serverId)
+    }
+
+    response := &chunk_pb.HeartBeatResponse{
+        Status:   &common_pb.Status{Code: common_pb.Status_OK},
+        Commands: []*chunk_pb.ChunkCommand{command},
+    }
+
+    select {
+    case stream <- response:
+        return nil
+    case <-time.After(5 * time.Second):
+        return fmt.Errorf("timeout sending command to server %s", serverId)
+    }
+}
+
 func (m *Master) selectReplicationSource(chunkHandle string) string {
     m.chunksMu.RLock()
     chunkInfo, exists := m.chunks[chunkHandle]
@@ -527,6 +587,80 @@ func (m *Master) sendDeleteChunkCommand(serverId, chunkHandle string) {
     m.addPendingOperation(serverId, op)
 }
 
+func (m *Master) incrementChunkVersion(c *ChunkInfo) {
+    c.Version++
+
+    m.chunksMu.RLock()
+    var chunkHandle string
+    for handle, info := range m.chunks {
+        if info == c {
+            chunkHandle = handle
+            break
+        }
+    }
+    m.chunksMu.RUnlock()
+
+    if chunkHandle != "" {
+        metadata := struct {
+            Version int32 `json:"version"`
+        }{
+            Version: c.Version,
+        }
+
+        if err := m.opLog.LogOperation(OpUpdateChunkVersion, "", chunkHandle, metadata); err != nil {
+            log.Printf("Failed to log chunk version update: %v", err)
+        }
+    }
+}
+
+// Helper function to schedule updates for stale replicas
+func (s *MasterServer) scheduleStaleReplicaDelete(chunkHandle string, staleServerId string) {
+    chunkInfo := s.Master.chunks[chunkHandle]
+    if chunkInfo == nil {
+        return
+    }
+    if _, isStale := chunkInfo.StaleReplicas[staleServerId]; !isStale {
+        log.Printf("Server %s already has handle %s up-to-date, skipping replication", 
+        staleServerId, chunkHandle)
+        return
+    }
+
+    // First check if we already have enough up-to-date replicas
+    upToDateCount := 0
+    for serverId := range chunkInfo.Locations {
+        if _, isStale := chunkInfo.StaleReplicas[serverId]; !isStale {
+            upToDateCount++
+        }
+    }
+
+    log.Printf("Deleting stale chunk %s on server %d", chunkHandle, upToDateCount)
+    
+
+    s.Master.chunkServerMgr.mu.RLock()
+    responseChan, exists := s.Master.chunkServerMgr.activeStreams[staleServerId]
+    s.Master.chunkServerMgr.mu.RUnlock()
+    
+    if !exists {
+        log.Print("No active stream for server")
+        return
+    }
+
+    response := &chunk_pb.HeartBeatResponse{
+        Status:   &common_pb.Status{Code: common_pb.Status_OK},
+        Commands: []*chunk_pb.ChunkCommand{&chunk_pb.ChunkCommand{
+            Type:        chunk_pb.ChunkCommand_DELETE,
+            ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+        }},
+    }
+
+    select {
+    case responseChan <- response:
+        // Command sent successfully
+    case <-time.After(5 * time.Second):
+        log.Print("timeout sending INIT_EMPTY to server")
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*
@@ -575,64 +709,4 @@ func (m *Master) validatePath(filepath string) bool {
     }
     
     return true
-}
-
-func (s *MasterServer) selectInitialChunkServers() []string {
-    var desiredReplicas = s.Master.Config.Replication.Factor
-
-    s.Master.serversMu.RLock()
-    defer s.Master.serversMu.RUnlock()
-
-    type serverLoad struct {
-        id       string
-        activeOps int32
-    }
-    
-    // Collect all active servers
-    var activeServers []serverLoad
-    for serverId, server := range s.Master.servers {
-        server.mu.RLock()
-        if server.Status == "ACTIVE" {
-            activeServers = append(activeServers, serverLoad{
-                id:        serverId,
-                activeOps: server.ActiveOps,
-            })
-        }
-        server.mu.RUnlock()
-    }
-
-    // Sort servers by load (activeOps)
-    sort.Slice(activeServers, func(i, j int) bool {
-        return activeServers[i].activeOps < activeServers[j].activeOps
-    })
-
-    // Select the least loaded servers up to desiredReplicas
-    selectedServers := make([]string, 0, desiredReplicas)
-    for i := 0; i < len(activeServers) && i < desiredReplicas; i++ {
-        selectedServers = append(selectedServers, activeServers[i].id)
-    }
-
-    return selectedServers
-}
-
-func (cm *ChunkServerManager) SendCommandToServer(serverId string, command *chunk_pb.ChunkCommand) error {
-    cm.mu.RLock()
-    stream, exists := cm.activeStreams[serverId]
-    cm.mu.RUnlock()
-
-    if !exists {
-        return fmt.Errorf("no active stream for server %s", serverId)
-    }
-
-    response := &chunk_pb.HeartBeatResponse{
-        Status:   &common_pb.Status{Code: common_pb.Status_OK},
-        Commands: []*chunk_pb.ChunkCommand{command},
-    }
-
-    select {
-    case stream <- response:
-        return nil
-    case <-time.After(5 * time.Second):
-        return fmt.Errorf("timeout sending command to server %s", serverId)
-    }
 }
