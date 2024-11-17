@@ -65,7 +65,7 @@ func NewChunkServer(serverID, address string, config *Config) (*ChunkServer, err
         log.Printf("Warning: Failed to recover metadata: %v", err)
     }
     
-    cs.StartMetadataCheckpointing(5 * time.Minute)
+    cs.StartMetadataCheckpointing(5 * time.Second)
 
 	return cs, nil
 }
@@ -423,7 +423,7 @@ func (cs *ChunkServer) handleReplicate(cmd *chunk_pb.ChunkCommand) error {
         return fmt.Errorf("replication failed: %v", result.Error)
     }
 
-    log.Printf("Successfully queued replication for chunk: %s", chunkHandle)
+    log.Printf("Successfully finished replication for chunk: %s", chunkHandle)
     return nil
 }
 

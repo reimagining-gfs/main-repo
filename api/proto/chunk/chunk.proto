@@ -32,6 +32,7 @@ message ForwardWriteRequest {
     string operation_id = 1;
     common.ChunkHandle chunk_handle = 2;
     int64 offset = 3;
+    int32 version = 4;
 }
 
 message ForwardWriteResponse {
@@ -42,6 +43,7 @@ message ForwardReplicateChunkRequest {
     common.ChunkHandle chunk_handle = 1;
     bytes data = 2;
     uint32 checksum = 3;
+    int32 version = 4;
 }
 
 message ForwardReplicateChunkResponse {
