@@ -10,12 +10,13 @@ import (
 )
 
 const (
-    OpCreateFile    = "CREATE_FILE"
-    OpDeleteFile    = "DELETE_FILE"
-    OpAddChunk      = "ADD_CHUNK"
-    OpUpdateChunk   = "UPDATE_CHUNK"
-    OpDeleteChunk   = "DELETE_CHUNK"
-    OpRenameFile    = "RENAME_FILE"
+    OpCreateFile            = "CREATE_FILE"
+    OpDeleteFile            = "DELETE_FILE"
+    OpAddChunk              = "ADD_CHUNK"
+    OpUpdateChunk           = "UPDATE_CHUNK"
+    OpDeleteChunk           = "DELETE_CHUNK"
+    OpRenameFile            = "RENAME_FILE"
+    OpUpdateChunkVersion    = "UPDATE_CHUNK_VERSION"
 )
 
 type LogEntry struct {
@@ -122,15 +123,40 @@ func (m *Master) replayOperationLog() error {
             m.filesMu.Unlock()
 
         case OpAddChunk:
+            metadata, ok := entry.Metadata.(map[string]interface{})
+            if !ok {
+                return fmt.Errorf("invalid metadata format for chunk creation")
+            }
+
+            // Extract chunk info
+            chunkInfoData, ok := metadata["chunk_info"]
+            if !ok {
+                return fmt.Errorf("chunk_info missing from metadata")
+            }
+            
             var chunkInfo ChunkInfo
-            metadataBytes, _ := json.Marshal(entry.Metadata)
-            if err := json.Unmarshal(metadataBytes, &chunkInfo); err != nil {
+            chunkInfoBytes, _ := json.Marshal(chunkInfoData)
+            if err := json.Unmarshal(chunkInfoBytes, &chunkInfo); err != nil {
                 return fmt.Errorf("failed to unmarshal chunk info: %v", err)
             }
+
+            // Extract file index
+            fileIndexFloat, ok := metadata["file_index"].(float64)
+            if !ok {
+                return fmt.Errorf("file_index missing or invalid in metadata")
+            }
+            fileIndex := int64(fileIndexFloat)
 
             m.chunksMu.Lock()
             m.chunks[entry.ChunkHandle] = &chunkInfo
             m.chunksMu.Unlock()
+
+            // Update file's chunk mapping
+            m.filesMu.Lock()
+            if fileInfo, exists := m.files[entry.Filename]; exists {
+                fileInfo.Chunks[fileIndex] = entry.ChunkHandle
+            }
+            m.filesMu.Unlock()
 
         case OpUpdateChunk:
             var chunkInfo ChunkInfo
@@ -150,6 +176,27 @@ func (m *Master) replayOperationLog() error {
         case OpDeleteChunk:
             m.chunksMu.Lock()
             delete(m.chunks, entry.ChunkHandle)
+            m.chunksMu.Unlock()
+
+        case OpUpdateChunkVersion:
+            metadata, ok := entry.Metadata.(map[string]interface{})
+            if !ok {
+                return fmt.Errorf("invalid metadata format for chunk version update")
+            }
+
+            version, ok := metadata["version"].(float64)
+            if !ok {
+                return fmt.Errorf("version missing or invalid in metadata")
+            }
+
+            m.chunksMu.Lock()
+            if chunk, exists := m.chunks[entry.ChunkHandle]; exists {
+                chunk.Version = int32(version)
+                // Update primary if it was included in the log
+                if primary, ok := metadata["primary"].(string); ok {
+                    chunk.Primary = primary
+                }
+            }
             m.chunksMu.Unlock()
         }
     }

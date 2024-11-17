@@ -11,10 +11,12 @@ import (
 
 type ChunkInfo struct {
     Size    int64
+    Version         int32
     Locations map[string]bool  
     ServerAddresses map[string]string  
     Primary   string          
     LeaseExpiration time.Time
+    StaleReplicas   map[string]bool
     mu sync.RWMutex
 }
 

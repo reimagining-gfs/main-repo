@@ -17,6 +17,7 @@ type ChunkMetadata struct {
     Size         int64
     LastModified time.Time
     Checksum     uint32
+    Version      int32
 }
 
 type ChunkServer struct {
