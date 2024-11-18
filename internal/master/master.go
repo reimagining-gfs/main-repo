@@ -273,11 +273,13 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
             }
         }
     }
-    if numVersionUpdates > 0 {
-        s.Master.incrementChunkVersion(chunkInfo)
-    }
+
     s.Master.chunkServerMgr.mu.RUnlock()
 
+    if numVersionUpdates > 0 {
+        s.Master.incrementChunkVersion(req.ChunkHandle.Handle, chunkInfo)
+    }
+    
     log.Print("Extending: ", req.ServerId)
 
     return &chunk_pb.RequestLeaseResponse{
@@ -334,8 +336,6 @@ func (s *MasterServer) HeartBeat(stream chunk_pb.ChunkMasterService_HeartBeatSer
         }
 
         commands := s.generateChunkCommands(serverId)
-
-        log.Print("Commands: ", commands)
         
         response := &chunk_pb.HeartBeatResponse{
             Status:   &common_pb.Status{Code: common_pb.Status_OK},
