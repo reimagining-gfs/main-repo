@@ -254,6 +254,7 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
         Version: newVersion,
     }
 
+    numVersionUpdates := 0
     s.Master.chunkServerMgr.mu.RLock()
     for serverId := range chunkInfo.Locations {
         if responseChan, exists := s.Master.chunkServerMgr.activeStreams[serverId]; exists {
@@ -264,13 +265,16 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
 
             select {
             case responseChan <- response:
+                numVersionUpdates = numVersionUpdates + 1
                 log.Printf("Sent version update command to server %s for chunk %s (version %d)", 
                     serverId, req.ChunkHandle.Handle, newVersion)
-                s.Master.incrementChunkVersion(chunkInfo)
             default:
                 log.Printf("Warning: Failed to send version update to server %s (channel full)", serverId)
             }
         }
+    }
+    if numVersionUpdates > 0 {
+        s.Master.incrementChunkVersion(chunkInfo)
     }
     s.Master.chunkServerMgr.mu.RUnlock()
 
@@ -377,10 +381,10 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
         }, nil
     }
 
+    s.Master.filesMu.RUnlock()
+    
     fileInfo.mu.RLock()
     defer fileInfo.mu.RUnlock()
-    s.Master.filesMu.RUnlock()
-
     // Validate chunk range
     if req.StartChunk < 0 || req.StartChunk > req.EndChunk {
         return &client_pb.GetFileChunksInfoResponse{

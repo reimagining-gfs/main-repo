@@ -72,8 +72,6 @@ func (cs *ChunkServer) StartMetadataCheckpointing(interval time.Duration) {
                 cs.mu.RLock()
                 if err := cs.saveMetadata(); err != nil {
                     log.Printf("Failed to checkpoint metadata: %v", err)
-                } else {
-                    log.Printf("Successfully checkpointed metadata")
                 }
                 cs.mu.RUnlock()
             }
