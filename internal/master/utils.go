@@ -200,11 +200,12 @@ func (m *Master) initiateReplication(chunkHandle string) {
         return
     }
     
+    m.chunksMu.RUnlock()
+
     chunkInfo.mu.RLock()
     currentReplicas := len(chunkInfo.Locations)
     neededReplicas := m.Config.Replication.Factor - currentReplicas
     chunkInfo.mu.RUnlock()
-    m.chunksMu.RUnlock()
 
     if neededReplicas <= 0 {
         return
@@ -372,10 +373,10 @@ func (m *Master) selectReplicationSource(chunkHandle string) string {
         m.chunksMu.RUnlock()
         return ""
     }
-
+    m.chunksMu.RUnlock()
+    
     chunkInfo.mu.RLock()
     defer chunkInfo.mu.RUnlock()
-    m.chunksMu.RUnlock()
 
     // Prefer primary if it exists and is alive
     if chunkInfo.Primary != "" {
@@ -503,9 +504,7 @@ func (m *Master) getExpiredDeletedFiles() []string {
     defer m.filesMu.RUnlock()
     
     for deletedPath, _ := range m.files {
-        // log.Print("In loop")
         if strings.HasPrefix(deletedPath, m.Config.Deletion.TrashDirPrefix) {
-            // log.Print("Prefix verified")
             parts := strings.Split(strings.TrimPrefix(deletedPath, m.Config.Deletion.TrashDirPrefix), "_")
             if len(parts) != 2 {
                 log.Printf("Error parsing delete time from path %s: unexpected format", deletedPath)
@@ -516,13 +515,8 @@ func (m *Master) getExpiredDeletedFiles() []string {
                 log.Printf("Error parsing delete time from path %s: %v", deletedPath, err)
                 continue
             }
-            
-            // log.Print(cutoffTime)
-            // log.Print(deleteTime)
-            // log.Print(deleteTime.Before(cutoffTime))
 
             if deleteTime.Before(cutoffTime) {
-                // log.Print("Time verified")
                 expiredFiles = append(expiredFiles, deletedPath)
             }
         }
@@ -536,7 +530,6 @@ func (m *Master) processGCBatch(deletedPaths []string) {
     defer m.filesMu.Unlock()
 
     for _, deletedPath := range deletedPaths {
-        log.Print("Processing")
         fileInfo, exists := m.files[deletedPath]
         if !exists {
             continue
@@ -577,29 +570,16 @@ func (m *Master) sendDeleteChunkCommand(serverId, chunkHandle string) {
     m.addPendingOperation(serverId, op)
 }
 
-func (m *Master) incrementChunkVersion(c *ChunkInfo) {
+func (m *Master) incrementChunkVersion(chunkHandle string, c *ChunkInfo) {
     c.Version++
 
-    m.chunksMu.RLock()
-    var chunkHandle string
-    for handle, info := range m.chunks {
-        if info == c {
-            chunkHandle = handle
-            break
-        }
+    metadata := struct {
+        Version int32 `json:"version"`
+    }{
+        Version: c.Version,
     }
-    m.chunksMu.RUnlock()
-
-    if chunkHandle != "" {
-        metadata := struct {
-            Version int32 `json:"version"`
-        }{
-            Version: c.Version,
-        }
-
-        if err := m.opLog.LogOperation(OpUpdateChunkVersion, "", chunkHandle, metadata); err != nil {
-            log.Printf("Failed to log chunk version update: %v", err)
-        }
+    if err := m.opLog.LogOperation(OpUpdateChunkVersion, "", chunkHandle, metadata); err != nil {
+        log.Printf("Failed to log chunk version update: %v", err)
     }
 }
 
