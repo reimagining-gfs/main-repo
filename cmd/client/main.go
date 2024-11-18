@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -178,6 +179,18 @@ func processCommand(input string) bool {
 		content := strings.Join(args[3:], " ")
 		handleWrite(ctx, args[1], offset, content)
 
+	case "writefile":
+		if len(args) < 3 {
+			color.Red("Usage: writefile <gfs_filename> <offset> <local_filepath>")
+			return true
+		}
+		offset, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			color.Red("Invalid offset: %v", err)
+			return true
+		}
+		handleWriteFile(ctx, args[1], offset, args[3])
+
 	case "chunks":
 		if len(args) < 4 {
 			color.Red("Usage: chunks <filename> <start_chunk> <end_chunk>")
@@ -210,6 +223,7 @@ func printHelp() {
 	fmt.Println("  rename <old_filename> <new_filename>        - Rename a file")
 	fmt.Println("  read <filename> <offset> <length> - Read file contents")
 	fmt.Println("  write <filename> <offset> <data> - Write content to a file")
+	fmt.Println("  writefile <gfs_filename> <offset> <local_filepath> - Write file contents from local file")
 	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
 	fmt.Println("  push <chunk_handle> <data>     - Push data to a chunk")
 	fmt.Println("  ls                                          - List all files")
@@ -264,6 +278,29 @@ func handleWrite(ctx context.Context, filename string, offset int64, content str
         return
     }
     color.Green("Successfully wrote %d bytes to file", written)
+}
+
+func handleWriteFile(ctx context.Context, gfsFilename string, offset int64, localFilepath string) {
+	// Check if local file exists
+	if _, err := os.Stat(localFilepath); os.IsNotExist(err) {
+		color.Red("Local file does not exist: %s", localFilepath)
+		return
+	}
+
+	// Read the local file
+	data, err := ioutil.ReadFile(localFilepath)
+	if err != nil {
+		color.Red("Failed to read local file: %v", err)
+		return
+	}
+
+	// Write the data to GFS
+	written, err := gfsClient.Write(ctx, gfsFilename, offset, data)
+	if err != nil {
+		color.Red("Failed to write to GFS file: %v", err)
+		return
+	}
+	color.Green("Successfully wrote %d bytes from %s to GFS file %s", written, localFilepath, gfsFilename)
 }
 
 func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk int64) {

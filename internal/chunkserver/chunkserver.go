@@ -382,9 +382,9 @@ func (cs *ChunkServer) handleUpdateVersion(cmd *chunk_pb.ChunkCommand) error {
     chunkHandle := cmd.ChunkHandle.Handle
     
     cs.mu.Lock()
-    defer cs.mu.Unlock()
-
     metadata, exists := cs.chunks[chunkHandle]
+    cs.mu.Unlock()
+
     if !exists {
         return fmt.Errorf("chunk %s does not exist", chunkHandle)
     }
