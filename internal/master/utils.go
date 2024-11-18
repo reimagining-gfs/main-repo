@@ -112,7 +112,6 @@ func (s *MasterServer) updateServerStatus(serverId string, req *chunk_pb.HeartBe
     defer serverInfo.mu.Unlock()
 
     serverInfo.LastHeartbeat = time.Now()
-    serverInfo.AvailableSpace = req.AvailableSpace
     serverInfo.CPUUsage = req.CpuUsage
     serverInfo.ActiveOps = req.ActiveOperations
     serverInfo.LastUpdated = time.Now()
@@ -258,7 +257,7 @@ func (m *Master) selectReplicationTargets(chunkHandle string, count int) []*comm
     }
 
     chunkInfo.mu.RLock()
-    chunkSize := chunkInfo.Size
+
     existingLocations := make(map[string]bool)
     for loc := range chunkInfo.Locations {
         existingLocations[loc] = true
@@ -279,16 +278,9 @@ func (m *Master) selectReplicationTargets(chunkHandle string, count int) []*comm
         }
 
         serverInfo.mu.RLock()
-        // Skip servers that don't have enough space
-        if serverInfo.AvailableSpace < chunkSize {
-            serverInfo.mu.RUnlock()
-            continue
-        }
 
         // Calculate score based on multiple factors
         score := 100.0
-        // Prefer servers with more available space
-        score += float64(serverInfo.AvailableSpace) / float64(1<<30) // normalize by GB
         // Prefer servers with lower CPU usage
         score -= serverInfo.CPUUsage
         // Prefer servers with fewer active operations
