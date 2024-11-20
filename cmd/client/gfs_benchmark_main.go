@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/fatih/color"
 )
-
+c
 var gfsClient *client.Client
 
 func main() {
