@@ -1,95 +1,94 @@
 package chunkserver
 
 import (
-    "sync"
-    "time"
-    "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
+	"sync"
+	"time"
 
-    chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
-    common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
-    chunk_ops "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations"
-    chunkserver_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk"
+	chunkserver_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk"
+	chunk_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_master"
+	chunk_ops "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_operations"
+	common_pb "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/common"
 
-    "google.golang.org/grpc"
+	"google.golang.org/grpc"
 )
 
 type ChunkMetadata struct {
-    Size         int64
-    LastModified time.Time
-    Checksum     uint32
-    Version      int32
+	Size         int64
+	LastModified time.Time
+	Checksum     uint32
+	Version      int32
 }
 
 type ChunkServer struct {
-    mu sync.RWMutex
+	mu sync.RWMutex
 
-    // Server identification
-    serverID string
-    address  string
+	// Server identification
+	serverID string
+	address  string
 
-    config *Config
+	config *Config
 
-    dataDir     string
-    serverDir   string // Complete path including serverID
-    chunks      map[string]*ChunkMetadata
+	dataDir   string
+	serverDir string // Complete path including serverID
+	chunks    map[string]*ChunkMetadata
 
-    // Operation coordination
-    operationQueue *OperationQueue
-    leases        map[string]time.Time
+	// Operation coordination
+	operationQueue *OperationQueue
+	leases         map[string]time.Time
 
-    // Master connection
-    masterClient  chunk_pb.ChunkMasterServiceClient
-    heartbeatStop chan struct{}
+	// Master connection
+	masterClient  chunk_pb.ChunkMasterServiceClient
+	heartbeatStop chan struct{}
 
-    // Server state
-    availableSpace int64
-    isRunning     bool
+	// Server state
+	availableSpace int64
+	isRunning      bool
 
-    chunkPrimary map[string]bool
+	chunkPrimary map[string]bool
 
-    pendingData     map[string]map[string]*PendingData  // operationID -> chunkHandle -> data
-    pendingDataLock sync.RWMutex
+	pendingData     map[string]map[string]*PendingData // operationID -> chunkHandle -> data
+	pendingDataLock sync.RWMutex
 
-    grpcServer *grpc.Server
+	grpcServer *grpc.Server
 
-    chunk_ops.UnimplementedChunkOperationServiceServer
-    chunkserver_pb.UnimplementedChunkServiceServer
+	chunk_ops.UnimplementedChunkOperationServiceServer
+	chunkserver_pb.UnimplementedChunkServiceServer
 }
 
 type Operation struct {
-    OperationId   string
-    Type          OperationType
-    ChunkHandle   string
-    Offset        int64
-    Data          []byte
-    Checksum      uint32
-    Secondaries   []*common_pb.ChunkLocation
-    ResponseChan  chan OperationResult
+	OperationId  string
+	Type         OperationType
+	ChunkHandle  string
+	Offset       int64
+	Data         []byte
+	Checksum     uint32
+	Secondaries  []*common_pb.ChunkLocation
+	ResponseChan chan OperationResult
 }
 
 type OperationType int
 
 const (
-    OpWrite OperationType = iota
-    OpRead
-    OpReplicate
+	OpWrite OperationType = iota
+	OpRead
+	OpReplicate
 )
 
 type OperationResult struct {
-    Status  common.Status
-    Data    []byte
-    Offset  int64
-    Error   error
+	Status common_pb.Status
+	Data   []byte
+	Offset int64
+	Error  error
 }
 
 type OperationQueue struct {
-    mu       sync.Mutex
-    queue    []*Operation
-    notEmpty chan struct{}
+	mu       sync.Mutex
+	queue    []*Operation
+	notEmpty chan struct{}
 }
 
 type PendingData struct {
-    Data     []byte
-    Checksum uint32
-    Offset   int64
+	Data     []byte
+	Checksum uint32
+	Offset   int64
 }

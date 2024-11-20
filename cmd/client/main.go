@@ -2,24 +2,22 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-	"context"
 
 	"github.com/Mit-Vin/GFS-Distributed-Systems/internal/client"
-	"github.com/spf13/cobra"
 	"github.com/fatih/color"
+	"github.com/spf13/cobra"
 )
 
 var (
 	gfsClient *client.Client
-	config    *client.ClientConfig
 )
 
 func main() {
@@ -58,29 +56,6 @@ func setupClient(cmd *cobra.Command) {
 	if err != nil {
 		log.Fatalf("Failed to create GFS client: %v", err)
 	}
-}
-
-func loadConfig(path string) (*client.ClientConfig, error) {
-	if path == "" {
-		return nil, fmt.Errorf("configuration path cannot be empty")
-	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("invalid config path: %v", err)
-	}
-
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config file does not exist: %s", absPath)
-	}
-
-	config, err := client.LoadConfig(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config from %s: %v", absPath, err)
-	}
-
-	clientConfig := config.ToClientConfig()
-	return clientConfig, nil
 }
 
 func startCLI() {
@@ -148,34 +123,33 @@ func processCommand(input string) bool {
 
 	case "read":
 		if len(args) < 4 {
-            color.Red("Usage: read <filename> <offset> <length>")
-            return true
-        }
-        offset, err := strconv.ParseInt(args[2], 10, 64)
-        if err != nil {
-            color.Red("Invalid offset: %v", err)
-            return true
-        }
-        length, err := strconv.ParseInt(args[3], 10, 64)
-        if err != nil {
-            color.Red("Invalid length: %v", err)
-            return true
-        }
-        handleRead(ctx, args[1], offset, length)
-
+			color.Red("Usage: read <filename> <offset> <length>")
+			return true
+		}
+		offset, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			color.Red("Invalid offset: %v", err)
+			return true
+		}
+		length, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			color.Red("Invalid length: %v", err)
+			return true
+		}
+		handleRead(ctx, args[1], offset, length)
 
 	case "write":
 		if len(args) < 3 {
 			color.Red("Usage: write <filename> <offset> <data>")
 			return true
 		}
-		
+
 		offset, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil {
 			color.Red("Invalid offset: %v", err)
 			return true
 		}
-		
+
 		content := strings.Join(args[3:], " ")
 		handleWrite(ctx, args[1], offset, content)
 
@@ -201,13 +175,13 @@ func processCommand(input string) bool {
 		handleGetChunks(ctx, args[1], startChunk, endChunk)
 
 	case "push":
-        if len(args) < 3 {
-            color.Red("Usage: push <chunk_handle> <data>")
-            return true
-        }
-        
+		if len(args) < 3 {
+			color.Red("Usage: push <chunk_handle> <data>")
+			return true
+		}
+
 		data := strings.Join(args[2:], " ")
-        handlePushData(ctx, args[1], data)
+		handlePushData(ctx, args[1], data)
 
 	default:
 		color.Red("Unknown command: %s", cmd)
@@ -259,25 +233,24 @@ func handleDelete(ctx context.Context, filename string) {
 }
 
 func handleRead(ctx context.Context, filename string, offset, length int64) {
-    data, err := gfsClient.Read(ctx, filename, offset, length)
-    if err != nil {
-        color.Red("Failed to read file: %v", err)
-        return
-    }
+	data, err := gfsClient.Read(ctx, filename, offset, length)
+	if err != nil {
+		color.Red("Failed to read file: %v", err)
+		return
+	}
 
-    color.Green("Successfully read %d bytes:", len(data))
-    fmt.Println(string(data))
+	color.Green("Successfully read %d bytes:", len(data))
+	fmt.Println(string(data))
 }
 
-
 func handleWrite(ctx context.Context, filename string, offset int64, content string) {
-    data := []byte(content)
-    written, err := gfsClient.Write(ctx, filename, offset, data)
-    if err != nil {
-        color.Red("Failed to write to file: %v", err)
-        return
-    }
-    color.Green("Successfully wrote %d bytes to file", written)
+	data := []byte(content)
+	written, err := gfsClient.Write(ctx, filename, offset, data)
+	if err != nil {
+		color.Red("Failed to write to file: %v", err)
+		return
+	}
+	color.Green("Successfully wrote %d bytes to file", written)
 }
 
 func handleWriteFile(ctx context.Context, gfsFilename string, offset int64, localFilepath string) {
@@ -320,11 +293,11 @@ func handleGetChunks(ctx context.Context, filename string, startChunk, endChunk 
 }
 
 func handlePushData(ctx context.Context, chunkHandle string, data string) {
-    operationId, err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
-    if err != nil {
-        color.Red("Failed to push data: %v", err)
-        return
-    }
+	operationId, err := gfsClient.PushDataToPrimary(ctx, chunkHandle, []byte(data))
+	if err != nil {
+		color.Red("Failed to push data: %v", err)
+		return
+	}
 	color.Green("OperationId: %s", operationId)
-    color.Green("Data pushed successfully to chunk %s", chunkHandle)
+	color.Green("Data pushed successfully to chunk %s", chunkHandle)
 }

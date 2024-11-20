@@ -61,7 +61,7 @@
 
   server:
     host: "localhost"
-    port: 5000
+    port: 50051
     max_connections: 100
     connection_timeout: 30
     # Maximum request size in bytes (default: 100MB)
