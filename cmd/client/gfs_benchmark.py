@@ -12,20 +12,20 @@ import sys
 
 class BenchmarkConfig:
     def __init__(self, num_clients, file_size, chunk_size, num_operations, 
-                 read_write_ratio, random_access, gfs_cli_path):
+                 read_percentage, gfs_cli_path):
         self.num_clients = num_clients
         self.file_size = file_size
         self.chunk_size = chunk_size
         self.num_operations = num_operations
-        self.read_write_ratio = read_write_ratio
-        self.random_access = random_access
+        self.read_percentage = read_percentage
         self.gfs_cli_path = gfs_cli_path
 
 class BenchmarkResult:
-    def __init__(self, operation, duration, bytes_processed, success, client_id, timestamp):
+    def __init__(self, operation, duration, offset, size, success, client_id, timestamp):
         self.operation = operation
         self.duration = duration
-        self.bytes_processed = bytes_processed
+        self.offset = offset  # Store offset instead of data
+        self.size = size  # Store size instead of full data
         self.success = success
         self.client_id = client_id
         self.timestamp = timestamp
@@ -38,7 +38,7 @@ class GFSBenchmark:
     def generate_random_data(self, size):
         return ''.join(random.choices(string.ascii_letters + string.digits, k=size))
 
-    def run_gfs_command(self, command, client_id):
+    def run_gfs_command(self, command, client_id, offset=None, size=None):
         start_time = time.time()
         full_command = [
             self.config.gfs_cli_path
@@ -53,34 +53,32 @@ class GFSBenchmark:
             )
             
             success = result.returncode == 0
-            if not success:
-                print(f"Command failed: {' '.join(full_command)}")
-                print(f"Error output: {result.stderr}")
             
             return BenchmarkResult(
                 operation=' '.join(command),
                 duration=time.time() - start_time,
-                bytes_processed=0,  # Will be updated in specific methods
+                offset=offset,
+                size=size,
                 success=success,
                 client_id=client_id,
                 timestamp=start_time
             )
         except subprocess.TimeoutExpired:
-            print(f"Command timed out: {' '.join(full_command)}")
             return BenchmarkResult(
                 operation=' '.join(command),
                 duration=time.time() - start_time,
-                bytes_processed=0,
+                offset=offset,
+                size=size,
                 success=False,
                 client_id=client_id,
                 timestamp=start_time
             )
-        except Exception as e:
-            print(f"Command failed with exception: {str(e)}")
+        except Exception as _:
             return BenchmarkResult(
                 operation=' '.join(command),
                 duration=time.time() - start_time,
-                bytes_processed=0,
+                offset=offset,
+                size=size,
                 success=False,
                 client_id=client_id,
                 timestamp=start_time
@@ -89,61 +87,70 @@ class GFSBenchmark:
     def perform_write_operation(self, client_id, filename, offset, size):
         data = self.generate_random_data(size)
         command = ['write', filename, str(offset), data]
-        result = self.run_gfs_command(command, client_id)
-        result.bytes_processed = size
-        return result
+        return self.run_gfs_command(command, client_id, offset, size)
 
     def perform_read_operation(self, client_id, filename, offset, size):
         command = ['read', filename, str(offset), str(size)]
-        result = self.run_gfs_command(command, client_id)
-        result.bytes_processed = size
-        return result
+        return self.run_gfs_command(command, client_id, offset, size)
 
     def client_workload(self, client_id):
         filename = f"benchmark_file_{client_id}"
         
         # Create the file first
         create_result = self.run_gfs_command(['create', filename], client_id)
-        if not create_result.success:
-            print(f"Failed to create file for client {client_id}")
-            return []
-        
         local_results = [create_result]
+        
+        # If read percentage is > 0, generate 100 contiguous chunks first
+        if self.config.read_percentage > 0:
+            for i in range(100):
+                offset = i * self.config.chunk_size
+                write_result = self.perform_write_operation(
+                    client_id, 
+                    filename, 
+                    offset, 
+                    self.config.chunk_size
+                )
+                local_results.append(write_result)
+        
         operations_completed = 0
         
         while operations_completed < self.config.num_operations:
             # Determine if this operation should be a read or write
-            is_read = random.random() < self.config.read_write_ratio
+            is_read = random.randint(1, 100) <= self.config.read_percentage
             
-            if self.config.random_access:
+            if self.config.read_percentage == 100:
+                # Random offsets within the first 100 chunks for reads
+                max_offset = 100 * self.config.chunk_size - self.config.chunk_size
+                offset = random.randint(0, max_offset)
+            elif self.config.read_percentage == 0:
+                # Sequential writes for write-only mode
+                offset = (operations_completed * self.config.chunk_size) 
+            else:
+                # Random access for mixed workloads
                 offset = random.randint(0, self.config.file_size - self.config.chunk_size)
-            else:  # sequential access
-                offset = (operations_completed * self.config.chunk_size) % self.config.file_size
             
-            if is_read:
+            if is_read and self.config.read_percentage > 0:
                 result = self.perform_read_operation(
                     client_id,
                     filename,
                     offset,
                     self.config.chunk_size
                 )
-            else:
+            elif not is_read and self.config.read_percentage < 100:
                 result = self.perform_write_operation(
                     client_id,
                     filename,
                     offset,
                     self.config.chunk_size
                 )
+            else:
+                continue  # Skip this iteration if the operation doesn't match the configuration
             
             local_results.append(result)
             operations_completed += 1
             
             # Add a small delay between operations
             time.sleep(0.1)
-        
-        # Delete the file at the end
-        # delete_result = self.run_gfs_command(['delete', filename], client_id)
-        # local_results.append(delete_result)
         
         return local_results
 
@@ -161,8 +168,8 @@ class GFSBenchmark:
                 try:
                     results = future.result()
                     self.results.extend(results)
-                except Exception as e:
-                    print(f"Client {client_id} generated an exception: {e}")
+                except Exception as _:
+                    pass
         
         total_time = time.time() - start_time
         self.generate_report(total_time)
@@ -175,8 +182,8 @@ class GFSBenchmark:
         read_durations = [r.duration for r in read_results]
         write_durations = [r.duration for r in write_results]
         
-        read_throughput = sum(r.bytes_processed for r in read_results) / total_time if read_results else 0
-        write_throughput = sum(r.bytes_processed for r in write_results) / total_time if write_results else 0
+        read_throughput = sum(r.size for r in read_results) / total_time if read_results else 0
+        write_throughput = sum(r.size for r in write_results) / total_time if write_results else 0
         
         # Generate timestamp for unique filenames
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -185,12 +192,13 @@ class GFSBenchmark:
         csv_filename = f'benchmark_results_{timestamp}.csv'
         with open(csv_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['Operation', 'Duration', 'Bytes', 'Success', 'Client', 'Timestamp'])
+            writer.writerow(['Operation', 'Duration', 'Offset', 'Size', 'Success', 'Client', 'Timestamp'])
             for result in self.results:
                 writer.writerow([
                     result.operation,
                     result.duration,
-                    result.bytes_processed,
+                    result.offset,
+                    result.size,
                     result.success,
                     result.client_id,
                     result.timestamp
@@ -201,6 +209,7 @@ class GFSBenchmark:
         print(f"Total time: {total_time:.2f} seconds")
         print(f"Number of clients: {self.config.num_clients}")
         print(f"Operations per client: {self.config.num_operations}")
+        print(f"Read Percentage: {self.config.read_percentage}%")
         print(f"\nSuccess Rates:")
         print(f"  Reads: {len(read_results)}/{len([r for r in self.results if 'read' in r.operation])}")
         print(f"  Writes: {len(write_results)}/{len([r for r in self.results if 'write' in r.operation])}")
@@ -217,15 +226,17 @@ class GFSBenchmark:
 def main():
     parser = argparse.ArgumentParser(description='GFS Benchmark Tool')
     parser.add_argument('--clients', type=int, default=1, help='Number of concurrent clients')
-    parser.add_argument('--file-size', type=int, default=5*1024*1024, help='File size in bytes')
-    parser.add_argument('--chunk-size', type=int, default=5, help='Chunk size in bytes')
+    parser.add_argument('--file-size', type=int, default=100*1024*1024, help='File size in bytes')
+    parser.add_argument('--chunk-size', type=int, default=100*1024, help='Chunk size in bytes')
     parser.add_argument('--operations', type=int, default=10, help='Number of operations per client')
-    parser.add_argument('--read-ratio', type=float, default=0.5, help='Ratio of read operations (0.0-1.0)')
-    parser.add_argument('--access-pattern', choices=['random', 'sequential'], default='random', 
-                        help='Access pattern for reads and writes')
+    parser.add_argument('--read-ratio', type=int, default=50, help='Percentage of read operations (0-100)')
     parser.add_argument('--gfs-cli-path', type=str, default='./gfs-cli', help='Path to the GFS CLI executable')
 
     args = parser.parse_args()
+
+    # Input validation for read ratio
+    if args.read_ratio < 0 or args.read_ratio > 100:
+        sys.exit(1)
 
     # Ensure absolute paths
     gfs_cli_path = os.path.abspath(args.gfs_cli_path)
@@ -233,7 +244,6 @@ def main():
     # Build the GFS CLI if needed
     if not os.path.exists(gfs_cli_path):
         try:
-            print("Building GFS CLI...")
             build_process = subprocess.run(
                 ['go', 'build', '-o', gfs_cli_path, 'gfs_benchmark_main.go'],
                 capture_output=True,
@@ -241,10 +251,8 @@ def main():
                 cwd=os.path.dirname(gfs_cli_path)
             )
             if build_process.returncode != 0:
-                raise Exception(f"Failed to build GFS CLI: {build_process.stderr}")
-            print("GFS CLI built successfully")
-        except Exception as e:
-            print(f"Failed to build GFS CLI: {str(e)}")
+                sys.exit(1)
+        except Exception as _:
             sys.exit(1)
 
     config = BenchmarkConfig(
@@ -252,8 +260,7 @@ def main():
         file_size=args.file_size,
         chunk_size=args.chunk_size,
         num_operations=args.operations,
-        read_write_ratio=args.read_ratio,
-        random_access=args.access_pattern == 'random',
+        read_percentage=args.read_ratio,
         gfs_cli_path=gfs_cli_path,
     )
 
