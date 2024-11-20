@@ -397,111 +397,117 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
 
     s.Master.filesMu.Lock()
     for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
-        if idx >= int64(len(fileInfo.Chunks)) {
-            // Generate new chunk handle using UUID
-            chunkHandle := uuid.New().String()
-            fileInfo.Chunks[idx] = chunkHandle 
-            
-            s.Master.chunksMu.Lock()
-            // Create new chunk info
-            chunkInfo := &ChunkInfo{
-                mu:        sync.RWMutex{},
-                Locations: make(map[string]bool),
-                ServerAddresses: make(map[string]string),
-                Version:         0,
-                StaleReplicas:   make(map[string]bool),
-            }
-            s.Master.chunks[chunkHandle] = chunkInfo
+        chunkHandle := fileInfo.Chunks[idx]
+        chunkInfo := s.Master.chunks[chunkHandle]
 
-            metadata := map[string]interface{}{
-                "chunk_info": chunkInfo,
-                "file_index": idx,
-            }
-
-            if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, metadata); err != nil {
-                log.Printf("Failed to log chunk creation: %v", err)
-            }
-            
-            // Select initial servers for this chunk
-            selectedServers := s.selectInitialChunkServers()
-            if len(selectedServers) == 0 {
-                s.Master.chunksMu.Unlock()
-                continue
-            }
-
-            // Prepare INIT_EMPTY command for all selected servers
-            initCommand := &chunk_pb.ChunkCommand{
-                Type: chunk_pb.ChunkCommand_INIT_EMPTY,
-                ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
-            }
-
-            // Send INIT_EMPTY command to all selected servers
-            var initWg sync.WaitGroup
-            initErrors := make([]error, len(selectedServers))
-            
-            for i, serverId := range selectedServers {
-                initWg.Add(1)
-                go func(serverIdx int, srvId string) {
-                    defer initWg.Done()
-                    
-                    s.Master.chunkServerMgr.mu.RLock()
-                    responseChan, exists := s.Master.chunkServerMgr.activeStreams[srvId]
-                    s.Master.chunkServerMgr.mu.RUnlock()
-                    
-                    if !exists {
-                        initErrors[serverIdx] = fmt.Errorf("no active stream for server %s", srvId)
-                        return
-                    }
-
-                    response := &chunk_pb.HeartBeatResponse{
-                        Status:   &common_pb.Status{Code: common_pb.Status_OK},
-                        Commands: []*chunk_pb.ChunkCommand{initCommand},
-                    }
-
-                    select {
-                    case responseChan <- response:
-                        // Command sent successfully
-                    case <-time.After(5 * time.Second):
-                        initErrors[serverIdx] = fmt.Errorf("timeout sending INIT_EMPTY to server %s", srvId)
-                    }
-                }(i, serverId)
-            }
-
-            // Wait for all initialization attempts to complete
-            initWg.Wait()
-
-            // Check for initialization errors
-            var successfulServers []string
-            for i, err := range initErrors {
-                if err == nil {
-                    successfulServers = append(successfulServers, selectedServers[i])
-                } else {
-                    log.Printf("Error initializing chunk %s on server %s: %v", 
-                        chunkHandle, selectedServers[i], err)
-                }
-            }
-
-            // Proceed only if we have enough successful initializations
-            if len(successfulServers) > 0 {
-                chunkInfo := s.Master.chunks[chunkHandle]
-                chunkInfo.mu.Lock()
-                
-                // Add only successful servers to locations
-                for _, serverId := range successfulServers {
-                    chunkInfo.Locations[serverId] = true
-
-                    s.Master.serversMu.Lock()
-                    chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
-                    s.Master.serversMu.Unlock()
-                }
-
-                if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
-                    log.Printf("Failed to log chunk update: %v", err)
-                }
-                chunkInfo.mu.Unlock()
-            }
-            s.Master.chunksMu.Unlock()
+        if chunkInfo != nil {
+            continue
         }
+
+        // Generate new chunk handle using UUID
+        chunkHandle = uuid.New().String()
+        log.Printf("Creating for index %d", idx)
+        fileInfo.Chunks[idx] = chunkHandle 
+        
+        s.Master.chunksMu.Lock()
+        // Create new chunk info
+        chunkInfo = &ChunkInfo{
+            mu:        sync.RWMutex{},
+            Locations: make(map[string]bool),
+            ServerAddresses: make(map[string]string),
+            Version:         0,
+            StaleReplicas:   make(map[string]bool),
+        }
+        s.Master.chunks[chunkHandle] = chunkInfo
+
+        metadata := map[string]interface{}{
+            "chunk_info": chunkInfo,
+            "file_index": idx,
+        }
+
+        if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, metadata); err != nil {
+            log.Printf("Failed to log chunk creation: %v", err)
+        }
+        
+        // Select initial servers for this chunk
+        selectedServers := s.selectInitialChunkServers()
+        if len(selectedServers) == 0 {
+            s.Master.chunksMu.Unlock()
+            continue
+        }
+
+        // Prepare INIT_EMPTY command for all selected servers
+        initCommand := &chunk_pb.ChunkCommand{
+            Type: chunk_pb.ChunkCommand_INIT_EMPTY,
+            ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+        }
+
+        // Send INIT_EMPTY command to all selected servers
+        var initWg sync.WaitGroup
+        initErrors := make([]error, len(selectedServers))
+        
+        for i, serverId := range selectedServers {
+            initWg.Add(1)
+            go func(serverIdx int, srvId string) {
+                defer initWg.Done()
+                
+                s.Master.chunkServerMgr.mu.RLock()
+                responseChan, exists := s.Master.chunkServerMgr.activeStreams[srvId]
+                s.Master.chunkServerMgr.mu.RUnlock()
+                
+                if !exists {
+                    initErrors[serverIdx] = fmt.Errorf("no active stream for server %s", srvId)
+                    return
+                }
+
+                response := &chunk_pb.HeartBeatResponse{
+                    Status:   &common_pb.Status{Code: common_pb.Status_OK},
+                    Commands: []*chunk_pb.ChunkCommand{initCommand},
+                }
+
+                select {
+                case responseChan <- response:
+                    // Command sent successfully
+                case <-time.After(5 * time.Second):
+                    initErrors[serverIdx] = fmt.Errorf("timeout sending INIT_EMPTY to server %s", srvId)
+                }
+            }(i, serverId)
+        }
+
+        // Wait for all initialization attempts to complete
+        initWg.Wait()
+
+        // Check for initialization errors
+        var successfulServers []string
+        for i, err := range initErrors {
+            if err == nil {
+                successfulServers = append(successfulServers, selectedServers[i])
+            } else {
+                log.Printf("Error initializing chunk %s on server %s: %v", 
+                    chunkHandle, selectedServers[i], err)
+            }
+        }
+
+        // Proceed only if we have enough successful initializations
+        if len(successfulServers) > 0 {
+            chunkInfo := s.Master.chunks[chunkHandle]
+            chunkInfo.mu.Lock()
+            
+            // Add only successful servers to locations
+            for _, serverId := range successfulServers {
+                chunkInfo.Locations[serverId] = true
+
+                s.Master.serversMu.Lock()
+                chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
+                s.Master.serversMu.Unlock()
+            }
+
+            if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
+                log.Printf("Failed to log chunk update: %v", err)
+            }
+            chunkInfo.mu.Unlock()
+        }
+        s.Master.chunksMu.Unlock()
     }
     s.Master.filesMu.Unlock()
 
