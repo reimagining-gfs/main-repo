@@ -1,6 +1,6 @@
-# GFS-Distributed-Systems
+# GFS Implementation
 
-This is a comprehensive reference guide for the mini-GFS project, detailing resources and references for understanding concepts, implementation strategies, and design considerations.
+This is a comprehensive reference guide for our implementation of the GFS, detailing resources and references for understanding concepts, coding strategies, and design considerations.
 
 ---
 
@@ -19,13 +19,15 @@ This is a comprehensive reference guide for the mini-GFS project, detailing reso
 
 ## Project Overview
 
-This project is a simplified implementation of the Google File System (GFS), focusing on creating a distributed file storage system with basic functionalities such as chunk handling, data replication, and fault tolerance.
+This project is a localized implementation of the Google File System (GFS) including functionalities such as read and write handling, replication, chunk handling, etc. and the salient addition of exactly-once record-append semantics.
 
 Key features include:
+
 - **Client-Server Communication** using gRPC
 - **File Chunking and Replication** to support large file storage
 - **Chunk Location Management** by the Master node
 - **Leasing and Heartbeats** for consistency and fault detection
+- _**TODO**_
 
 ---
 
@@ -35,7 +37,7 @@ The organization of this repository is:
 
 ```plaintext
 GFS-DISTRIBUTED-SYSTEM/
-├── api/proto/                     # Protobuf definitions for gRPC communication
+├── api/proto/                      # Protobuf definitions for gRPC communication
 │   ├── chunk_master/
 │   ├── chunk_operations/
 │   ├── client_master/
@@ -66,7 +68,7 @@ GFS-DISTRIBUTED-SYSTEM/
 │       └── utils.go
 ├── storage/                        # Persistent storage
 │   ├── chunks/
-│   ├── metadata.json           # JSON metadata for chunks
+│   ├── metadata.json               # JSON metadata for chunks
 ├── go.mod
 ├── go.sum
 ├── Makefile
@@ -75,7 +77,6 @@ GFS-DISTRIBUTED-SYSTEM/
 ```
 
 Note that the structure followed is according to a common go project pattern mentioned at: https://github.com/golang-standards/project-layout
-
 
 ---
 
@@ -115,7 +116,6 @@ Note that the structure followed is according to a common go project pattern men
 
 - **Leasing Mechanism**: Implemented a basic leasing mechanism as inspired by GFS. The Master server manages leases and renews them based on client access patterns.
 - **Chunk Replication**: Ensured that each chunk is replicated across multiple chunk servers for data redundancy and fault tolerance.
-
 
 - Detailed doumentation about every component can be found in the `/docs` folder.
 
