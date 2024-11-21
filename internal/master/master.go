@@ -26,13 +26,6 @@ func (s *MasterServer) Stop() {
 	}
 }
 
-func NewChunkServerManager(master *Master) *ChunkServerManager {
-	return &ChunkServerManager{
-		master:        master,
-		activeStreams: make(map[string]chan *chunk_pb.HeartBeatResponse),
-	}
-}
-
 func NewMaster(config *Config) *Master {
 	m := &Master{
 		Config:        config,
@@ -137,8 +130,8 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
 	s.Master.serversMu.Unlock()
 
 	s.Master.chunksMu.Lock()
-	for _, chunk := range req.Chunks {
-		chunkHandle := chunk.Handle
+	for _, reportedChunk := range req.Chunks {
+		chunkHandle := reportedChunk.Handle
 		if _, exists := s.Master.chunks[chunkHandle]; !exists {
 			s.Master.chunks[chunkHandle] = &ChunkInfo{
 				mu:              sync.RWMutex{},
@@ -149,18 +142,18 @@ func (s *MasterServer) ReportChunk(req *chunk_pb.ReportChunkRequest, stream chun
 			}
 		}
 
-		chunkInfo := s.Master.chunks[chunkHandle]
-		chunkInfo.mu.Lock()
+		RetrievedChunk := s.Master.chunks[chunkHandle]
+		RetrievedChunk.mu.Lock()
 
-		if chunk.Version < chunkInfo.Version {
-			chunkInfo.StaleReplicas[req.ServerId] = true
+		if reportedChunk.Version < RetrievedChunk.Version {
+			RetrievedChunk.StaleReplicas[req.ServerId] = true
 			s.scheduleStaleReplicaDelete(chunkHandle, req.ServerId)
 		} else {
-			delete(chunkInfo.StaleReplicas, req.ServerId)
-			chunkInfo.Locations[req.ServerId] = true
-			chunkInfo.ServerAddresses[req.ServerId] = req.ServerAddress
+			delete(RetrievedChunk.StaleReplicas, req.ServerId)
+			RetrievedChunk.Locations[req.ServerId] = true
+			RetrievedChunk.ServerAddresses[req.ServerId] = req.ServerAddress
 		}
-		chunkInfo.mu.Unlock()
+		RetrievedChunk.mu.Unlock()
 
 		serverInfo.mu.Lock()
 		serverInfo.Chunks[chunkHandle] = true
@@ -276,7 +269,7 @@ func (s *MasterServer) RequestLease(ctx context.Context, req *chunk_pb.RequestLe
 		s.Master.incrementChunkVersion(req.ChunkHandle.Handle, chunkInfo)
 	}
 
-	log.Print("Extending: ", req.ServerId)
+	log.Printf("Extending Lease for server %v for chunkhandle %v", req.ServerId, req.ChunkHandle.Handle)
 
 	return &chunk_pb.RequestLeaseResponse{
 		Status:          &common_pb.Status{Code: common_pb.Status_OK},
@@ -356,230 +349,230 @@ var (
 )
 
 func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.GetFileChunksInfoRequest) (*client_pb.GetFileChunksInfoResponse, error) {
-    if err := s.validateFilename(req.Filename); err != nil {
-        return &client_pb.GetFileChunksInfoResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: err.Error(),
-            },
-        }, nil
-    }
+	if err := s.validateFilename(req.Filename); err != nil {
+		return &client_pb.GetFileChunksInfoResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: err.Error(),
+			},
+		}, nil
+	}
 
-    s.Master.filesMu.RLock()
-    fileInfo, exists := s.Master.files[req.Filename]
-    if !exists {
-        s.Master.filesMu.RUnlock()
-        return &client_pb.GetFileChunksInfoResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: ErrFileNotFound.Error(),
-            },
-        }, nil
-    }
+	s.Master.filesMu.RLock()
+	fileInfo, exists := s.Master.files[req.Filename]
+	if !exists {
+		s.Master.filesMu.RUnlock()
+		return &client_pb.GetFileChunksInfoResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: ErrFileNotFound.Error(),
+			},
+		}, nil
+	}
 
-    s.Master.filesMu.RUnlock()
-    
-    fileInfo.mu.RLock()
-    defer fileInfo.mu.RUnlock()
-    // Validate chunk range
-    if req.StartChunk < 0 || req.StartChunk > req.EndChunk {
-        return &client_pb.GetFileChunksInfoResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: ErrInvalidChunkRange.Error(),
-            },
-        }, nil
-    }
+	s.Master.filesMu.RUnlock()
 
-    s.Master.filesMu.Lock()
-    for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
-        chunkHandle := fileInfo.Chunks[idx]
-        chunkInfo := s.Master.chunks[chunkHandle]
+	fileInfo.mu.RLock()
+	defer fileInfo.mu.RUnlock()
+	// Validate chunk range
+	if req.StartChunk < 0 || req.StartChunk > req.EndChunk {
+		return &client_pb.GetFileChunksInfoResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: ErrInvalidChunkRange.Error(),
+			},
+		}, nil
+	}
 
-        if chunkInfo != nil {
-            continue
-        }
+	s.Master.filesMu.Lock()
+	for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
+		chunkHandle := fileInfo.Chunks[idx]
+		chunkInfo := s.Master.chunks[chunkHandle]
 
-        // Generate new chunk handle using UUID
-        chunkHandle = uuid.New().String()
-        log.Printf("Creating for index %d", idx)
-        fileInfo.Chunks[idx] = chunkHandle 
-        
-        s.Master.chunksMu.Lock()
-        // Create new chunk info
-        chunkInfo = &ChunkInfo{
-            mu:        sync.RWMutex{},
-            Locations: make(map[string]bool),
-            ServerAddresses: make(map[string]string),
-            Version:         0,
-            StaleReplicas:   make(map[string]bool),
-        }
-        s.Master.chunks[chunkHandle] = chunkInfo
+		if chunkInfo != nil {
+			continue
+		}
 
-        metadata := map[string]interface{}{
-            "chunk_info": chunkInfo,
-            "file_index": idx,
-        }
+		// Generate new chunk handle using UUID
+		chunkHandle = uuid.New().String()
+		log.Printf("Creating for index %d", idx)
+		fileInfo.Chunks[idx] = chunkHandle
 
-        if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, metadata); err != nil {
-            log.Printf("Failed to log chunk creation: %v", err)
-        }
-        
-        // Select initial servers for this chunk
-        selectedServers := s.selectInitialChunkServers()
-        if len(selectedServers) == 0 {
-            s.Master.chunksMu.Unlock()
-            continue
-        }
+		s.Master.chunksMu.Lock()
+		// Create new chunk info
+		chunkInfo = &ChunkInfo{
+			mu:              sync.RWMutex{},
+			Locations:       make(map[string]bool),
+			ServerAddresses: make(map[string]string),
+			Version:         0,
+			StaleReplicas:   make(map[string]bool),
+		}
+		s.Master.chunks[chunkHandle] = chunkInfo
 
-        // Prepare INIT_EMPTY command for all selected servers
-        initCommand := &chunk_pb.ChunkCommand{
-            Type: chunk_pb.ChunkCommand_INIT_EMPTY,
-            ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
-        }
+		metadata := map[string]interface{}{
+			"chunk_info": chunkInfo,
+			"file_index": idx,
+		}
 
-        // Send INIT_EMPTY command to all selected servers
-        var initWg sync.WaitGroup
-        initErrors := make([]error, len(selectedServers))
-        
-        for i, serverId := range selectedServers {
-            initWg.Add(1)
-            go func(serverIdx int, srvId string) {
-                defer initWg.Done()
-                
-                s.Master.chunkServerMgr.mu.RLock()
-                responseChan, exists := s.Master.chunkServerMgr.activeStreams[srvId]
-                s.Master.chunkServerMgr.mu.RUnlock()
-                
-                if !exists {
-                    initErrors[serverIdx] = fmt.Errorf("no active stream for server %s", srvId)
-                    return
-                }
+		if err := s.Master.opLog.LogOperation(OpAddChunk, req.Filename, chunkHandle, metadata); err != nil {
+			log.Printf("Failed to log chunk creation: %v", err)
+		}
 
-                response := &chunk_pb.HeartBeatResponse{
-                    Status:   &common_pb.Status{Code: common_pb.Status_OK},
-                    Commands: []*chunk_pb.ChunkCommand{initCommand},
-                }
+		// Select initial servers for this chunk
+		selectedServers := s.selectInitialChunkServers()
+		if len(selectedServers) == 0 {
+			s.Master.chunksMu.Unlock()
+			continue
+		}
 
-                select {
-                case responseChan <- response:
-                    // Command sent successfully
-                case <-time.After(5 * time.Second):
-                    initErrors[serverIdx] = fmt.Errorf("timeout sending INIT_EMPTY to server %s", srvId)
-                }
-            }(i, serverId)
-        }
+		// Prepare INIT_EMPTY command for all selected servers
+		initCommand := &chunk_pb.ChunkCommand{
+			Type:        chunk_pb.ChunkCommand_INIT_EMPTY,
+			ChunkHandle: &common_pb.ChunkHandle{Handle: chunkHandle},
+		}
 
-        // Wait for all initialization attempts to complete
-        initWg.Wait()
+		// Send INIT_EMPTY command to all selected servers
+		var initWg sync.WaitGroup
+		initErrors := make([]error, len(selectedServers))
 
-        // Check for initialization errors
-        var successfulServers []string
-        for i, err := range initErrors {
-            if err == nil {
-                successfulServers = append(successfulServers, selectedServers[i])
-            } else {
-                log.Printf("Error initializing chunk %s on server %s: %v", 
-                    chunkHandle, selectedServers[i], err)
-            }
-        }
+		for i, serverId := range selectedServers {
+			initWg.Add(1)
+			go func(serverIdx int, srvId string) {
+				defer initWg.Done()
 
-        // Proceed only if we have enough successful initializations
-        if len(successfulServers) > 0 {
-            chunkInfo := s.Master.chunks[chunkHandle]
-            chunkInfo.mu.Lock()
-            
-            // Add only successful servers to locations
-            for _, serverId := range successfulServers {
-                chunkInfo.Locations[serverId] = true
+				s.Master.chunkServerMgr.mu.RLock()
+				responseChan, exists := s.Master.chunkServerMgr.activeStreams[srvId]
+				s.Master.chunkServerMgr.mu.RUnlock()
 
-                s.Master.serversMu.Lock()
-                chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
-                s.Master.serversMu.Unlock()
-            }
+				if !exists {
+					initErrors[serverIdx] = fmt.Errorf("no active stream for server %s", srvId)
+					return
+				}
 
-            if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
-                log.Printf("Failed to log chunk update: %v", err)
-            }
-            chunkInfo.mu.Unlock()
-        }
-        s.Master.chunksMu.Unlock()
-    }
-    s.Master.filesMu.Unlock()
+				response := &chunk_pb.HeartBeatResponse{
+					Status:   &common_pb.Status{Code: common_pb.Status_OK},
+					Commands: []*chunk_pb.ChunkCommand{initCommand},
+				}
 
-    // Gather chunk information
-    chunks := make(map[int64]*client_pb.ChunkInfo)
-    s.Master.chunksMu.RLock()
-    defer s.Master.chunksMu.RUnlock()
+				select {
+				case responseChan <- response:
+					// Command sent successfully
+				case <-time.After(5 * time.Second):
+					initErrors[serverIdx] = fmt.Errorf("timeout sending INIT_EMPTY to server %s", srvId)
+				}
+			}(i, serverId)
+		}
 
-    for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
-        chunkHandle := fileInfo.Chunks[idx]
-        chunkInfo := s.Master.chunks[chunkHandle]
-        
-        if chunkInfo == nil {
-            continue
-        }
+		// Wait for all initialization attempts to complete
+		initWg.Wait()
 
-        chunkInfo.mu.RLock()
-        needsNewPrimary := chunkInfo.Primary == "" || time.Now().After(chunkInfo.LeaseExpiration)
-        chunkInfo.mu.RUnlock()
+		// Check for initialization errors
+		var successfulServers []string
+		for i, err := range initErrors {
+			if err == nil {
+				successfulServers = append(successfulServers, selectedServers[i])
+			} else {
+				log.Printf("Error initializing chunk %s on server %s: %v",
+					chunkHandle, selectedServers[i], err)
+			}
+		}
 
-        if needsNewPrimary {
-            s.Master.chunksMu.RUnlock()
-            s.Master.assignNewPrimary(chunkHandle)
-            s.Master.chunksMu.RLock()
-        }
+		// Proceed only if we have enough successful initializations
+		if len(successfulServers) > 0 {
+			chunkInfo := s.Master.chunks[chunkHandle]
+			chunkInfo.mu.Lock()
 
-        chunkInfo.mu.RLock()
-        locations := make([]*common_pb.ChunkLocation, 0)
-        var primaryLocation *common_pb.ChunkLocation
+			// Add only successful servers to locations
+			for _, serverId := range successfulServers {
+				chunkInfo.Locations[serverId] = true
 
-        s.Master.serversMu.Lock()
-        if chunkInfo.Primary != "" && time.Now().Before(chunkInfo.LeaseExpiration) {
-            primaryLocation = &common_pb.ChunkLocation{
-                ServerId: chunkInfo.Primary,
-                ServerAddress: s.Master.servers[chunkInfo.Primary].Address,
-            }
-        }
+				s.Master.serversMu.Lock()
+				chunkInfo.ServerAddresses[serverId] = s.Master.servers[serverId].Address
+				s.Master.serversMu.Unlock()
+			}
 
-        for serverId := range chunkInfo.Locations {
-            if serverId != chunkInfo.Primary {
-                locations = append(locations, &common_pb.ChunkLocation{
-                    ServerId: serverId,
-                    ServerAddress: s.Master.servers[serverId].Address,
-                })
-            }
-        }
-        s.Master.serversMu.Unlock()
+			if err := s.Master.opLog.LogOperation(OpUpdateChunk, req.Filename, chunkHandle, chunkInfo); err != nil {
+				log.Printf("Failed to log chunk update: %v", err)
+			}
+			chunkInfo.mu.Unlock()
+		}
+		s.Master.chunksMu.Unlock()
+	}
+	s.Master.filesMu.Unlock()
 
-        if primaryLocation == nil {
-            chunkInfo.mu.RUnlock()
-            continue
-        }
+	// Gather chunk information
+	chunks := make(map[int64]*client_pb.ChunkInfo)
+	s.Master.chunksMu.RLock()
+	defer s.Master.chunksMu.RUnlock()
 
-        chunks[idx] = &client_pb.ChunkInfo{
-            ChunkHandle: &common_pb.ChunkHandle{
-                Handle: chunkHandle,
-            },
-            PrimaryLocation:    primaryLocation,
-            SecondaryLocations: locations,
-        }
-        chunkInfo.mu.RUnlock()
-    }
+	for idx := req.StartChunk; idx <= req.EndChunk; idx++ {
+		chunkHandle := fileInfo.Chunks[idx]
+		chunkInfo := s.Master.chunks[chunkHandle]
 
-    if len(chunks) == 0 {
-        return &client_pb.GetFileChunksInfoResponse{
-            Status: &common_pb.Status{
-                Code:    common_pb.Status_ERROR,
-                Message: "No available chunk servers with valid primaries",
-            },
-        }, nil
-    }
+		if chunkInfo == nil {
+			continue
+		}
 
-    return &client_pb.GetFileChunksInfoResponse{
-        Status: &common_pb.Status{Code: common_pb.Status_OK},
-        Chunks: chunks,
-    }, nil
+		chunkInfo.mu.RLock()
+		needsNewPrimary := chunkInfo.Primary == "" || time.Now().After(chunkInfo.LeaseExpiration)
+		chunkInfo.mu.RUnlock()
+
+		if needsNewPrimary {
+			s.Master.chunksMu.RUnlock()
+			s.Master.assignNewPrimary(chunkHandle)
+			s.Master.chunksMu.RLock()
+		}
+
+		chunkInfo.mu.RLock()
+		locations := make([]*common_pb.ChunkLocation, 0)
+		var primaryLocation *common_pb.ChunkLocation
+
+		s.Master.serversMu.Lock()
+		if chunkInfo.Primary != "" && time.Now().Before(chunkInfo.LeaseExpiration) {
+			primaryLocation = &common_pb.ChunkLocation{
+				ServerId:      chunkInfo.Primary,
+				ServerAddress: s.Master.servers[chunkInfo.Primary].Address,
+			}
+		}
+
+		for serverId := range chunkInfo.Locations {
+			if serverId != chunkInfo.Primary {
+				locations = append(locations, &common_pb.ChunkLocation{
+					ServerId:      serverId,
+					ServerAddress: s.Master.servers[serverId].Address,
+				})
+			}
+		}
+		s.Master.serversMu.Unlock()
+
+		if primaryLocation == nil {
+			chunkInfo.mu.RUnlock()
+			continue
+		}
+
+		chunks[idx] = &client_pb.ChunkInfo{
+			ChunkHandle: &common_pb.ChunkHandle{
+				Handle: chunkHandle,
+			},
+			PrimaryLocation:    primaryLocation,
+			SecondaryLocations: locations,
+		}
+		chunkInfo.mu.RUnlock()
+	}
+
+	if len(chunks) == 0 {
+		return &client_pb.GetFileChunksInfoResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: "No available chunk servers with valid primaries",
+			},
+		}, nil
+	}
+
+	return &client_pb.GetFileChunksInfoResponse{
+		Status: &common_pb.Status{Code: common_pb.Status_OK},
+		Chunks: chunks,
+	}, nil
 }
 
 func (s *MasterServer) CreateFile(ctx context.Context, req *client_pb.CreateFileRequest) (*client_pb.CreateFileResponse, error) {

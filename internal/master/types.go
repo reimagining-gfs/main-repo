@@ -69,7 +69,6 @@ type Master struct {
 }
 
 type ChunkServerManager struct {
-	master        *Master
 	mu            sync.RWMutex
 	activeStreams map[string]chan *chunk_pb.HeartBeatResponse
 }

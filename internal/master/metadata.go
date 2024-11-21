@@ -4,13 +4,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 )
 
 func (m *Master) LoadMetadata(path string) error {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -98,7 +97,7 @@ func (m *Master) checkpointMetadata() error {
 	}
 
 	tempFile := m.Config.Metadata.Database.Path + ".tmp"
-	if err := ioutil.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
 		return fmt.Errorf("failed to write temporary metadata file: %v", err)
 	}
 

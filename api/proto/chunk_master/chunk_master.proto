@@ -6,7 +6,7 @@ option go_package = "github.com/Mit-Vin/GFS-Distributed-Systems/api/proto/chunk_
 import "api/proto/common/common.proto";
 
 service ChunkMasterService {
-    // Used when chunk-server starts up, chunk-server reports all chunks stored
+    // For reporting all the hosted chunks to the master on (chunk server) startup
     rpc ReportChunk(ReportChunkRequest) returns (stream ReportChunkResponse) {}
     rpc RequestLease(RequestLeaseRequest) returns (RequestLeaseResponse) {}
     rpc HeartBeat(stream HeartBeatRequest) returns (stream HeartBeatResponse) {}
