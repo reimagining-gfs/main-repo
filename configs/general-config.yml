@@ -1,7 +1,5 @@
 ---
   chunk:
-    # [TODO] https://github.com/Mitanshk01/GFS-Distributed-Systems/issues/1
-    # Chunk size in bytes (1 MB = 1048576 bytes)
     size: 1048576
     
     naming_pattern: "chunk_{id}"

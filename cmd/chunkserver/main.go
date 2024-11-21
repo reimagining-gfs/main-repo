@@ -36,7 +36,7 @@ func main() {
 		log.Fatalf("Port %d is not available: %v\n", *port, err)
 	}
 	// The listener is not used further; defer closing to clean up resources
-	defer listener.Close()
+	listener.Close()
 	log.Printf("Port %d is available. Proceeding to initialize the chunk server.\n", *port)
 
 	// Create the chunk server instance

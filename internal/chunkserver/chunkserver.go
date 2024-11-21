@@ -217,11 +217,11 @@ func (cs *ChunkServer) buildHeartbeatRequest() *chunk_pb.HeartBeatRequest {
 	defer cs.mu.RUnlock()
 
 	chunks := make([]*chunk_pb.ChunkStatus, 0, len(cs.chunks))
-	for handle, meta := range cs.chunks {
+	for handle, chunkMetadata := range cs.chunks {
 		chunks = append(chunks, &chunk_pb.ChunkStatus{
 			ChunkHandle: &common_pb.ChunkHandle{Handle: handle},
-			Size:        meta.Size,
-			Version:     meta.Version,
+			Size:        chunkMetadata.Size,
+			Version:     chunkMetadata.Version,
 		})
 	}
 
@@ -234,59 +234,6 @@ func (cs *ChunkServer) buildHeartbeatRequest() *chunk_pb.HeartBeatRequest {
 		CpuUsage:         0.0,
 		ActiveOperations: int32(cs.operationQueue.Len()),
 	}
-}
-
-func (cs *ChunkServer) handleDelete(cmd *chunk_pb.ChunkCommand) error {
-	if cmd.ChunkHandle == nil {
-		return fmt.Errorf("received delete command with nil chunk handle")
-	}
-
-	chunkHandle := cmd.ChunkHandle.Handle
-	chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
-
-	// Check if the chunk file exists
-	_, err := os.Stat(chunkPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// The chunk file doesn't exist, so we can return without doing anything
-			return nil
-		} else {
-			// There was an error checking the file existence
-			return fmt.Errorf("error checking chunk file existence: %v", err)
-		}
-	}
-
-	// Attempt to delete the chunk file
-	err = os.Remove(chunkPath)
-	if err != nil {
-		// If the deletion failed, log the error and retry after a delay
-		log.Printf("Failed to delete chunk file %s: %v", chunkHandle, err)
-
-		// Retry the deletion after a delay
-		for i := 0; i < 3; i++ {
-			time.Sleep(time.Second * 5)
-			err = os.Remove(chunkPath)
-			if err == nil {
-				break
-			}
-			log.Printf("Retrying delete of chunk file %s (attempt %d): %v", chunkHandle, i+1, err)
-		}
-
-		// If the deletion still failed after retries, return the error
-		if err != nil {
-			return fmt.Errorf("failed to delete chunk file %s after retries: %v", chunkHandle, err)
-		}
-	}
-
-	// Remove the chunk metadata from the map
-	cs.mu.Lock()
-	delete(cs.chunks, chunkHandle)
-	delete(cs.leases, chunkHandle)
-	delete(cs.chunkPrimary, chunkHandle)
-	cs.mu.Unlock()
-
-	log.Printf("Deleted chunk: %s", chunkHandle)
-	return nil
 }
 
 func (cs *ChunkServer) handleHeartbeatResponse(resp *chunk_pb.HeartBeatResponse) {
@@ -425,6 +372,59 @@ func (cs *ChunkServer) handleReplicate(cmd *chunk_pb.ChunkCommand) error {
 	return nil
 }
 
+func (cs *ChunkServer) handleDelete(cmd *chunk_pb.ChunkCommand) error {
+	if cmd.ChunkHandle == nil {
+		return fmt.Errorf("received delete command with nil chunk handle")
+	}
+
+	chunkHandle := cmd.ChunkHandle.Handle
+	chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+	// Check if the chunk file exists
+	_, err := os.Stat(chunkPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// The chunk file doesn't exist, so we can return without doing anything
+			return nil
+		} else {
+			// There was an error checking the file existence
+			return fmt.Errorf("error checking chunk file existence: %v", err)
+		}
+	}
+
+	// Attempt to delete the chunk file
+	err = os.Remove(chunkPath)
+	if err != nil {
+		// If the deletion failed, log the error and retry after a delay
+		log.Printf("Failed to delete chunk file %s: %v", chunkHandle, err)
+
+		// Retry the deletion after a delay
+		for i := 0; i < 3; i++ {
+			time.Sleep(time.Second * 5)
+			err = os.Remove(chunkPath)
+			if err == nil {
+				break
+			}
+			log.Printf("Retrying delete of chunk file %s (attempt %d): %v", chunkHandle, i+1, err)
+		}
+
+		// If the deletion still failed after retries, return the error
+		if err != nil {
+			return fmt.Errorf("failed to delete chunk file %s after retries: %v", chunkHandle, err)
+		}
+	}
+
+	// Remove the chunk metadata from the map
+	cs.mu.Lock()
+	delete(cs.chunks, chunkHandle)
+	delete(cs.leases, chunkHandle)
+	delete(cs.chunkPrimary, chunkHandle)
+	cs.mu.Unlock()
+
+	log.Printf("Deleted chunk: %s", chunkHandle)
+	return nil
+}
+
 func (cs *ChunkServer) handleBecomePrimary(cmd *chunk_pb.ChunkCommand) error {
 	if cmd.ChunkHandle == nil {
 		return fmt.Errorf("received become primary command with nil chunk handle")
@@ -466,6 +466,23 @@ func (cs *ChunkServer) handleBecomePrimary(cmd *chunk_pb.ChunkCommand) error {
 	return nil
 }
 
+func (cs *ChunkServer) startLeaseRequester() {
+	ticker := time.NewTicker(time.Duration(cs.config.Server.LeaseRequestInterval) * time.Second)
+
+	// TODO: Extend lease only in case you have an ongoing operation
+	for range ticker.C {
+		cs.mu.RLock()
+		for handle, isPrimary := range cs.chunkPrimary {
+			if isPrimary {
+				if err := cs.requestLease(handle); err != nil {
+					log.Printf("Failed to request lease for chunk %s: %v", handle, err)
+				}
+			}
+		}
+		cs.mu.RUnlock()
+	}
+}
+
 func (cs *ChunkServer) requestLease(chunkHandle string) error {
 	ctx := context.Background()
 	req := &chunk_pb.RequestLeaseRequest{
@@ -495,23 +512,6 @@ func (cs *ChunkServer) requestLease(chunkHandle string) error {
 	return nil
 }
 
-func (cs *ChunkServer) startLeaseRequester() {
-	ticker := time.NewTicker(time.Duration(cs.config.Server.LeaseRequestInterval) * time.Second)
-
-	// TODO: Extend lease only in case you have an ongoing operation
-	for range ticker.C {
-		cs.mu.RLock()
-		for handle, isPrimary := range cs.chunkPrimary {
-			if isPrimary {
-				if err := cs.requestLease(handle); err != nil {
-					log.Printf("Failed to request lease for chunk %s: %v", handle, err)
-				}
-			}
-		}
-		cs.mu.RUnlock()
-	}
-}
-
 func (cs *ChunkServer) processOperations() {
 	for {
 		operation := cs.operationQueue.Pop()
@@ -521,6 +521,7 @@ func (cs *ChunkServer) processOperations() {
 
 		switch operation.Type {
 		case OpWrite:
+			log.Print("Handling Write")
 			err := cs.handleWrite(operation)
 
 			if err != nil {

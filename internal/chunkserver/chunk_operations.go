@@ -53,11 +53,12 @@ func (cs *ChunkServer) PushDataToPrimary(ctx context.Context, req *chunk_ops.Pus
 		return &chunk_ops.PushDataToPrimaryResponse{
 			Status: &common_pb.Status{
 				Code:    common_pb.Status_ERROR,
-				Message: "primary's lease has expired",
+				Message: "server's lease has expired",
 			},
 		}, nil
 	}
 
+	// TODO: check checksum with the given data
 	cs.storePendingData(req.OperationId, chunkHandle, req.Data, req.Checksum, 0)
 
 	var wg sync.WaitGroup
@@ -152,6 +153,7 @@ func (cs *ChunkServer) forwardDataToSecondary(ctx context.Context, location *com
 		return fmt.Errorf("failed to create stream: %v", err)
 	}
 
+	// TODO: Remove offset from Datachunk - verify whether it is needed. No.
 	chunk := &chunkserver_pb.DataChunk{
 		OperationId: operationID,
 		ChunkHandle: chunkHandle,
@@ -271,8 +273,8 @@ func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunk
 }
 
 func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_pb.ForwardWriteRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
-	pendingData := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
-	if pendingData == nil {
+	data := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
+	if data == nil {
 		return &chunkserver_pb.ForwardWriteResponse{
 			Status: &common_pb.Status{
 				Code:    common_pb.Status_ERROR,
@@ -280,8 +282,6 @@ func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_p
 			},
 		}, nil
 	}
-
-	data := pendingData
 
 	if req.Offset+int64(len(data)) > cs.config.Storage.MaxChunkSize {
 		return &chunkserver_pb.ForwardWriteResponse{
@@ -379,6 +379,7 @@ func (cs *ChunkServer) forwardWriteToSecondary(ctx context.Context, secondaryLoc
 }
 
 func (cs *ChunkServer) handleWrite(operation *Operation) error {
+	// TODO: Remove data from Operation Object
 	data := cs.getPendingData(operation.OperationId, operation.ChunkHandle)
 	if data == nil {
 		return fmt.Errorf("data not found in pending storage for operation ID %s", operation.OperationId)
@@ -596,6 +597,16 @@ func (cs *ChunkServer) ForwardReplicateChunk(ctx context.Context, req *chunkserv
 		file.Close()
 	}
 
+	computedChecksum := crc32.ChecksumIEEE(req.Data)
+	if computedChecksum != req.Checksum {
+		return &chunkserver_pb.ForwardReplicateChunkResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: "checksum mismatch",
+			},
+		}, nil
+	}
+
 	file, err := os.OpenFile(chunkPath, os.O_RDWR, 0644)
 	if err != nil {
 		return &chunkserver_pb.ForwardReplicateChunkResponse{
@@ -617,16 +628,6 @@ func (cs *ChunkServer) ForwardReplicateChunk(ctx context.Context, req *chunkserv
 		}, nil
 	}
 
-	computedChecksum := crc32.ChecksumIEEE(req.Data)
-	if computedChecksum != req.Checksum {
-		return &chunkserver_pb.ForwardReplicateChunkResponse{
-			Status: &common_pb.Status{
-				Code:    common_pb.Status_ERROR,
-				Message: "checksum mismatch",
-			},
-		}, nil
-	}
-
 	cs.mu.Lock()
 	cs.chunks[chunkHandle] = &ChunkMetadata{
 		Size:         int64(len(req.Data)),
@@ -635,6 +636,8 @@ func (cs *ChunkServer) ForwardReplicateChunk(ctx context.Context, req *chunkserv
 		Version:      req.Version,
 	}
 	cs.mu.Unlock()
+
+	log.Printf("Data from %v successfully replicated here.", chunkHandle)
 
 	return &chunkserver_pb.ForwardReplicateChunkResponse{
 		Status: &common_pb.Status{
