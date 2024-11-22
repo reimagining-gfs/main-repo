@@ -10,8 +10,6 @@ service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
     rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
-
-    // [TODO]: Primary -> Secondary: Serialized record append operations
 }
 
 // Messages for pushing data between chunk servers

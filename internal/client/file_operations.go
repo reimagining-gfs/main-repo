@@ -214,6 +214,19 @@ func (c *Client) Write(ctx context.Context, filename string, offset int64, data 
 	return totalWritten, nil
 }
 
+func (c *Client) Append(ctx context.Context, filename string, data []byte) (int, error) {
+	if int64(len(data)) >= ChunkSize/4 {
+		return -1, fmt.Errorf("data (size: %v) should be less than 1/4th of chunkSize (%v)", int64(len(data)), ChunkSize)
+	}
+
+	chunkInfo, err := c.GetLastChunkInfo(ctx, filename)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get chunk info: %v", err)
+	}
+
+	return -1, fmt.Errorf("method not implemented but will be added to %v", chunkInfo.ChunkHandle)
+}
+
 // Supporting types for write operations
 type WriteOperation struct {
 	Primary     string   // Primary chunk server handle

@@ -575,6 +575,56 @@ func (s *MasterServer) GetFileChunksInfo(ctx context.Context, req *client_pb.Get
 	}, nil
 }
 
+func (s *MasterServer) GetLastChunkIndexInFile(ctx context.Context, req *client_pb.GetLastChunkIndexInFileRequest) (*client_pb.GetLastChunkIndexInFileResponse, error) {
+	if err := s.validateFilename(req.Filename); err != nil {
+		return &client_pb.GetLastChunkIndexInFileResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	s.Master.filesMu.RLock()
+	fileInfo, exists := s.Master.files[req.Filename]
+	if !exists {
+		s.Master.filesMu.RUnlock()
+		return &client_pb.GetLastChunkIndexInFileResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: ErrFileNotFound.Error(),
+			},
+		}, nil
+	}
+
+	s.Master.filesMu.RUnlock()
+
+	fileInfo.mu.RLock()
+	defer fileInfo.mu.RUnlock()
+
+	lastChunkIndex := int64(-1)
+
+	s.Master.filesMu.Lock()
+	for idx := int64(0); ; idx++ {
+		chunkHandle := fileInfo.Chunks[idx]
+		chunkInfo := s.Master.chunks[chunkHandle]
+
+		if chunkInfo != nil {
+			continue
+		}
+
+		lastChunkIndex = idx - 1
+		log.Printf("Last chunk index for %v : %d", req.Filename, lastChunkIndex)
+		break
+	}
+	s.Master.filesMu.Unlock()
+
+	return &client_pb.GetLastChunkIndexInFileResponse{
+		Status:         &common_pb.Status{Code: common_pb.Status_OK},
+		LastChunkIndex: lastChunkIndex,
+	}, nil
+}
+
 func (s *MasterServer) CreateFile(ctx context.Context, req *client_pb.CreateFileRequest) (*client_pb.CreateFileResponse, error) {
 	if err := s.validateFilename(req.Filename); err != nil {
 		return &client_pb.CreateFileResponse{
