@@ -72,6 +72,7 @@ const (
 	OpWrite OperationType = iota
 	OpRead
 	OpReplicate
+	OpAppend
 )
 
 type OperationResult struct {

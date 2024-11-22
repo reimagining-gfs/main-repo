@@ -45,6 +45,7 @@ type Client struct {
 type ChunkLocationCache struct {
 	Info      *client_pb.ChunkInfo
 	ExpiresAt time.Time
+	LastIndex int64
 }
 
 type Operation struct {

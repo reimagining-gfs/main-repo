@@ -169,12 +169,12 @@ func (c *Client) GetChunkInfo(ctx context.Context, filename string, startIndex, 
 	return results, nil
 }
 
-func (c *Client) GetLastChunkInfo(ctx context.Context, filename string) (*client_pb.ChunkInfo, error) {
+func (c *Client) GetLastChunkInfo(ctx context.Context, filename string) (*client_pb.ChunkInfo, int64, error) {
 	c.chunkCacheMu.RLock()
 	cacheKey := fmt.Sprintf("%s-%v", filename, "last-chunk")
 	if cached, ok := c.chunkCache[cacheKey]; ok && time.Now().Before(cached.ExpiresAt) {
 		c.chunkCacheMu.RUnlock()
-		return cached.Info, nil
+		return cached.Info, cached.LastIndex, nil
 	}
 	c.chunkCacheMu.RUnlock()
 
@@ -184,11 +184,11 @@ func (c *Client) GetLastChunkInfo(ctx context.Context, filename string) (*client
 
 	indexResponse, err := c.client.GetLastChunkIndexInFile(ctx, indexRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get chunk info: %v", err)
+		return nil, -1, fmt.Errorf("failed to get chunk info: %v", err)
 	}
 
 	if indexResponse.Status.Code != common_pb.Status_OK {
-		return nil, fmt.Errorf("get chunk info failed: %s", indexResponse.Status.Message)
+		return nil, -1, fmt.Errorf("get chunk info failed: %s", indexResponse.Status.Message)
 	}
 
 	returnedIndex := indexResponse.LastChunkIndex
@@ -200,28 +200,29 @@ func (c *Client) GetLastChunkInfo(ctx context.Context, filename string) (*client
 		EndChunk:   returnedIndex,
 	}
 
-	resp, err := c.client.GetFileChunksInfo(ctx, chunkInfoRequest)
+	chunkInfoResponse, err := c.client.GetFileChunksInfo(ctx, chunkInfoRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get chunk info: %v", err)
+		return nil, -1, fmt.Errorf("failed to get chunk info: %v", err)
 	}
 
-	if resp.Status.Code != common_pb.Status_OK {
-		return nil, fmt.Errorf("get chunk info failed: %s", resp.Status.Message)
+	if chunkInfoResponse.Status.Code != common_pb.Status_OK {
+		return nil, -1, fmt.Errorf("get chunk info failed: %s", chunkInfoResponse.Status.Message)
 	}
 
 	c.chunkCacheMu.Lock()
-	chunkInfo, ok := resp.Chunks[returnedIndex]
+	chunkInfo, ok := chunkInfoResponse.Chunks[returnedIndex]
 	if !ok {
 		c.chunkCacheMu.Unlock()
-		return nil, fmt.Errorf("chunk index %d not found", returnedIndex)
+		return nil, -1, fmt.Errorf("chunk index %d not found", returnedIndex)
 	}
 
 	c.chunkCache[cacheKey] = &ChunkLocationCache{
 		Info:      chunkInfo,
 		ExpiresAt: time.Now().Add(c.config.Cache.ChunkTTL),
+		LastIndex: returnedIndex,
 	}
 	c.chunkHandleCache[chunkInfo.ChunkHandle.Handle] = chunkInfo
 	c.chunkCacheMu.Unlock()
 
-	return chunkInfo, nil
+	return chunkInfo, returnedIndex, nil
 }

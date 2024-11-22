@@ -272,6 +272,49 @@ func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunk
 	}
 }
 
+func (cs *ChunkServer) RecordAppendChunk(ctx context.Context, req *chunk_ops.RecordAppendChunkRequest) (*chunk_ops.RecordAppendChunkResponse, error) {
+	operation := &Operation{
+		OperationId:  req.OperationId,
+		Type:         OpAppend,
+		ChunkHandle:  req.ChunkHandle.Handle,
+		Offset:       0,
+		Data:         cs.getPendingData(req.OperationId, req.ChunkHandle.Handle),
+		Checksum:     cs.getPendingDataOffset(req.OperationId, req.ChunkHandle.Handle),
+		Secondaries:  req.Secondaries,
+		ResponseChan: make(chan OperationResult, 1),
+	}
+
+	cs.operationQueue.Push(operation)
+
+	select {
+	case result := <-operation.ResponseChan:
+		if result.Error != nil {
+			return &chunk_ops.RecordAppendChunkResponse{
+				Status: &common_pb.Status{
+					Code:    common_pb.Status_ERROR,
+					Message: result.Error.Error(),
+				},
+			}, nil
+		}
+
+		return &chunk_ops.RecordAppendChunkResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_OK,
+				Message: "Append operation completed successfully",
+			},
+			OffsetInChunk: result.Offset,
+		}, nil
+
+	case <-ctx.Done():
+		return &chunk_ops.RecordAppendChunkResponse{
+			Status: &common_pb.Status{
+				Code:    common_pb.Status_ERROR,
+				Message: "Append operation cancelled",
+			},
+		}, ctx.Err()
+	}
+}
+
 func (cs *ChunkServer) ForwardWriteChunk(ctx context.Context, req *chunkserver_pb.ForwardWriteRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
 	data := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
 	if data == nil {
@@ -471,6 +514,43 @@ func (cs *ChunkServer) handleWrite(operation *Operation) error {
 	}
 
 	return nil
+}
+
+func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
+	data := cs.getPendingData(operation.OperationId, operation.ChunkHandle)
+	if data == nil {
+		return -1, fmt.Errorf("data not found in pending storage for operation ID %s", operation.OperationId)
+	}
+
+	chunkHandle := operation.ChunkHandle
+	chunkPath := filepath.Join(cs.serverDir, chunkHandle+".chunk")
+
+	file, err := os.OpenFile(chunkPath, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return -1, fmt.Errorf("failed to open chunk file: %w", err)
+	}
+	defer file.Close()
+
+	// Get current file size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return -1, fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	appendOffset := fileInfo.Size()
+
+	if appendOffset+int64(len(data)) > cs.config.Storage.MaxChunkSize {
+		return -1, fmt.Errorf("append operation exceeds maximum chunk size")
+	}
+
+	// Write actual data at specified offset
+	if _, err := file.WriteAt(data, appendOffset); err != nil {
+		return -1, fmt.Errorf("failed to write data to chunk file: %w", err)
+	}
+
+	log.Println("Data written successfully to primary")
+
+	return appendOffset, nil
 }
 
 func (cs *ChunkServer) ReadChunk(ctx context.Context, req *chunk_ops.ReadChunkRequest) (*chunk_ops.ReadChunkResponse, error) {

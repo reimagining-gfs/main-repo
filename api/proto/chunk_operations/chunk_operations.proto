@@ -42,7 +42,7 @@ message RecordAppendChunkRequest {
 
 message RecordAppendChunkResponse {
     common.Status status = 1;
-    int64 offset = 2;
+    int64 offset_in_chunk = 2;
 }
 
 message PushDataToPrimaryRequest {

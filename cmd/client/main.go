@@ -158,7 +158,7 @@ func processCommand(input string) bool {
 			return true
 		}
 
-		content := strings.Join(args[3:], " ")
+		content := strings.Join(args[2:], " ")
 		handleAppend(ctx, args[1], content)
 
 	case "writefile":
