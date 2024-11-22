@@ -75,6 +75,14 @@ const (
 	OpAppend
 )
 
+type AppendPhaseType int
+
+const (
+	AppendPhaseOne AppendPhaseType = iota
+	AppendPhaseTwo
+	AppendNullify
+)
+
 type OperationResult struct {
 	Status common_pb.Status
 	Data   []byte

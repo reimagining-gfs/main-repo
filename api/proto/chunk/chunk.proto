@@ -9,6 +9,8 @@ import "api/proto/common/common.proto";
 service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseOne (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseTwo (ForwardWriteRequest) returns (ForwardWriteResponse);
     rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
 }
 
