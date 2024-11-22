@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
@@ -153,6 +152,15 @@ func processCommand(input string) bool {
 		content := strings.Join(args[3:], " ")
 		handleWrite(ctx, args[1], offset, content)
 
+	case "append":
+		if len(args) < 2 {
+			color.Red("Usage: append <filename> <offset> <data>")
+			return true
+		}
+
+		content := strings.Join(args[2:], " ")
+		handleAppend(ctx, args[1], content)
+
 	case "writefile":
 		if len(args) < 3 {
 			color.Red("Usage: writefile <gfs_filename> <offset> <local_filepath>")
@@ -195,11 +203,12 @@ func printHelp() {
 	fmt.Println("  create <filename>                           - Create a new file")
 	fmt.Println("  delete <filename>                           - Delete a file")
 	fmt.Println("  rename <old_filename> <new_filename>        - Rename a file")
-	fmt.Println("  read <filename> <offset> <length> - Read file contents")
-	fmt.Println("  write <filename> <offset> <data> - Write content to a file")
+	fmt.Println("  read <filename> <offset> <length>           - Read file contents")
+	fmt.Println("  write <filename> <offset> <data>            - Write content to a file")
+	fmt.Println("  append <filename> <data>            		   - Append content to a file")
 	fmt.Println("  writefile <gfs_filename> <offset> <local_filepath> - Write file contents from local file")
 	fmt.Println("  chunks <filename> <start_chunk> <end_chunk> - Get chunk information")
-	fmt.Println("  push <chunk_handle> <data>     - Push data to a chunk")
+	fmt.Println("  push <chunk_handle> <data>                  - Push data to a chunk")
 	fmt.Println("  ls                                          - List all files")
 	fmt.Println("  help                                        - Show this help")
 	fmt.Println("  exit                                        - Exit the shell")
@@ -253,6 +262,16 @@ func handleWrite(ctx context.Context, filename string, offset int64, content str
 	color.Green("Successfully wrote %d bytes to file", written)
 }
 
+func handleAppend(ctx context.Context, filename, content string) {
+	data := []byte(content)
+	append_offset, err := gfsClient.Append(ctx, filename, data)
+	if err != nil {
+		color.Red("Failed to append to file: %v", err)
+		return
+	}
+	color.Green("Successfully appended data at offset %d", append_offset)
+}
+
 func handleWriteFile(ctx context.Context, gfsFilename string, offset int64, localFilepath string) {
 	// Check if local file exists
 	if _, err := os.Stat(localFilepath); os.IsNotExist(err) {
@@ -261,7 +280,7 @@ func handleWriteFile(ctx context.Context, gfsFilename string, offset int64, loca
 	}
 
 	// Read the local file
-	data, err := ioutil.ReadFile(localFilepath)
+	data, err := os.ReadFile(localFilepath)
 	if err != nil {
 		color.Red("Failed to read local file: %v", err)
 		return

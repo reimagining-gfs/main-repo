@@ -7,6 +7,8 @@ import "api/proto/common/common.proto";
 
 service ClientMasterService {
     rpc GetFileChunksInfo(GetFileChunksInfoRequest) returns (GetFileChunksInfoResponse) {}
+    // Get the last file chunk related to a file
+    rpc GetLastChunkIndexInFile(GetLastChunkIndexInFileRequest) returns (GetLastChunkIndexInFileResponse) {}
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse) {}
     rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {}
     rpc RenameFile(RenameFileRequest) returns (RenameFileResponse) {}
@@ -32,6 +34,15 @@ message GetFileChunksInfoRequest {
 message GetFileChunksInfoResponse {
     common.Status status = 1;
     map<int64, ChunkInfo> chunks = 2;
+}
+
+message GetLastChunkIndexInFileRequest {
+    string filename = 1;
+}
+
+message GetLastChunkIndexInFileResponse {
+    common.Status status = 1;
+    int64 last_chunk_index = 2;
 }
 
 message CreateFileRequest {

@@ -72,6 +72,15 @@ const (
 	OpWrite OperationType = iota
 	OpRead
 	OpReplicate
+	OpAppend
+)
+
+type AppendPhaseType int
+
+const (
+	AppendPhaseOne AppendPhaseType = iota
+	AppendPhaseTwo
+	AppendNullify
 )
 
 type OperationResult struct {

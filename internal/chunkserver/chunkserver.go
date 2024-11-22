@@ -564,6 +564,29 @@ func (cs *ChunkServer) processOperations() {
 				}
 			}
 
+		case OpAppend:
+			log.Print("Handling Append")
+			appendAtOffset, err := cs.handleAppend(operation)
+
+			if err != nil {
+				operation.ResponseChan <- OperationResult{
+					Status: common_pb.Status{
+						Code:    common_pb.Status_ERROR,
+						Message: err.Error(),
+					},
+					Error: err,
+				}
+			} else {
+				operation.ResponseChan <- OperationResult{
+					Status: common_pb.Status{
+						Code:    common_pb.Status_OK,
+						Message: "Append operation succeeded",
+					},
+					Error:  nil,
+					Offset: appendAtOffset,
+				}
+			}
+
 		default:
 			log.Println("Unknown operation type:", operation.Type)
 		}
