@@ -11,11 +11,13 @@ The entry point into chunk servers is the [`../cmd/chunkserver/main.go`](../cmd/
 Communications between the client and the chunk servers are defined within `api/proto/chunk_operations/chunk_operations.proto`:
 
 ```proto
-service ChunkOperationService {
-    rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse) {}
-    rpc ReadChunk(ReadChunkRequest) returns (ReadChunkResponse) {}    
-    rpc RecordAppendChunk(RecordAppendChunkRequest) returns (RecordAppendChunkResponse) {}
-    rpc PushDataToPrimary(PushDataToPrimaryRequest) returns (PushDataToPrimaryResponse) {}
+service ClientMasterService {
+    rpc GetFileChunksInfo(GetFileChunksInfoRequest) returns (GetFileChunksInfoResponse) {}
+    // Get the last file chunk related to a file
+    rpc GetLastChunkIndexInFile(GetLastChunkIndexInFileRequest) returns (GetLastChunkIndexInFileResponse) {}
+    rpc CreateFile(CreateFileRequest) returns (CreateFileResponse) {}
+    rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse) {}
+    rpc RenameFile(RenameFileRequest) returns (RenameFileResponse) {}
 }
 ```
 
@@ -25,9 +27,9 @@ Communications between chunk servers (primary and secondaries) are defined with 
 service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseOne (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseTwo (ForwardWriteRequest) returns (ForwardWriteResponse);
     rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
-
-    // [TODO]: Primary -> Secondary: Serialized record append operations
 }
 ```
 
@@ -65,10 +67,12 @@ type ChunkServer struct {
 
 Subsequently, recover metadata (if existing) using `RecoverMetadata` (defined in `internal/chunkserver/metadata.go`) and starts a Goroutine for checkpointing the metadata every 5 seconds. This recovery deletes entries for chunks whose data no longer exists on the chunk server's stable storage.
 
-### Background Operations
+### Other documentation
 
-This is a **TODO**.
+The implementation is similar to that of the original GFS with certain caveats. Please refer to our technical report (TODO: add link) or the AI generated documentation ([Code Documentation](ai-generated-code-docs/chunk-server-code-documentation.md), [Workflow Documentation](ai-generated-code-docs/workflow-documentation-of-chunk-server-interations.md)).
 
-## Communication between Clients and Chunk Server
+### Diagram for Exactly-Once Appends
 
-This is a **TODO**.
+Exactly once appends are achieved using 2PC.
+
+![media/2pc.jpg](media/2pc.jpg)
