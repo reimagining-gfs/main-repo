@@ -154,7 +154,7 @@ func processCommand(input string) bool {
 
 	case "append":
 		if len(args) < 2 {
-			color.Red("Usage: append <filename> <offset> <data>")
+			color.Red("Usage: append <filename> <data>")
 			return true
 		}
 
