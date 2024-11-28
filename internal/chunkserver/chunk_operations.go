@@ -427,6 +427,9 @@ func (cs *ChunkServer) forwardWriteToSecondary(ctx context.Context, secondaryLoc
 }
 
 func (cs *ChunkServer) ForwardAppendChunkPhaseOne(ctx context.Context, req *chunkserver_pb.ForwardAppendRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
+	cs.idempotencyIdStatusMapLock.RLock()
+	defer cs.idempotencyIdStatusMapLock.RUnlock()
+
 	actualData := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
 	nullData := make([]byte, len(actualData))
 	correspondingWriteRequest := &chunkserver_pb.ForwardWriteRequest{
@@ -436,10 +439,39 @@ func (cs *ChunkServer) ForwardAppendChunkPhaseOne(ctx context.Context, req *chun
 		Version:     req.Version,
 	}
 
-	return cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, nullData)
+	writeResponse, err := cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, nullData)
+	if err != nil {
+		// Indicates failure
+		cs.idempotencyIdStatusMap[req.IdempotentencyId] = AppendFailed
+	}
+
+	return writeResponse, err
+}
+
+func (cs *ChunkServer) ForwardAppendChunkNullify(ctx context.Context, req *chunkserver_pb.ForwardAppendRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
+	cs.idempotencyIdStatusMapLock.RLock()
+	defer cs.idempotencyIdStatusMapLock.RUnlock()
+
+	actualData := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
+	nullData := make([]byte, len(actualData))
+	correspondingWriteRequest := &chunkserver_pb.ForwardWriteRequest{
+		OperationId: req.OperationId,
+		ChunkHandle: req.ChunkHandle,
+		Offset:      req.Offset,
+		Version:     req.Version,
+	}
+
+	writeResponse, err := cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, nullData)
+
+	// Nullify operation refers to failure
+	cs.idempotencyIdStatusMap[req.IdempotentencyId] = AppendFailed
+	return writeResponse, err
 }
 
 func (cs *ChunkServer) ForwardAppendChunkPhaseTwo(ctx context.Context, req *chunkserver_pb.ForwardAppendRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
+	cs.idempotencyIdStatusMapLock.RLock()
+	defer cs.idempotencyIdStatusMapLock.RUnlock()
+
 	data := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
 	correspondingWriteRequest := &chunkserver_pb.ForwardWriteRequest{
 		OperationId: req.OperationId,
@@ -447,7 +479,16 @@ func (cs *ChunkServer) ForwardAppendChunkPhaseTwo(ctx context.Context, req *chun
 		Offset:      req.Offset,
 		Version:     req.Version,
 	}
-	return cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, data)
+	writeResponse, err := cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, data)
+
+	if err != nil {
+		// Indicates failure
+		cs.idempotencyIdStatusMap[req.IdempotentencyId] = AppendFailed
+	}
+
+	// Append succeeded
+	cs.idempotencyIdStatusMap[req.IdempotentencyId] = AppendCompleted
+	return writeResponse, err
 }
 
 func (cs *ChunkServer) forwardAppendToSecondary(ctx context.Context, secondaryLocation *common_pb.ChunkLocation, operation *Operation, appendOffset int64, phase AppendPhaseType) error {
@@ -467,7 +508,7 @@ func (cs *ChunkServer) forwardAppendToSecondary(ctx context.Context, secondaryLo
 		Version:          cs.chunks[operation.ChunkHandle].Version,
 	}
 
-	if phase == AppendPhaseOne || phase == AppendNullify {
+	if phase == AppendPhaseOne {
 		_, err = client.ForwardAppendChunkPhaseOne(ctx, forwardAppendRequest)
 		if err != nil {
 			log.Fatalf("Failed to append to %s in append phase %v with error %v", secondaryLocation.ServerAddress, phase, err)
@@ -475,6 +516,12 @@ func (cs *ChunkServer) forwardAppendToSecondary(ctx context.Context, secondaryLo
 		}
 	} else if phase == AppendPhaseTwo {
 		_, err = client.ForwardAppendChunkPhaseTwo(ctx, forwardAppendRequest)
+		if err != nil {
+			log.Fatalf("Failed to append to %s in append phase %v with error %v", secondaryLocation.ServerAddress, phase, err)
+			return fmt.Errorf("failed to append to %s in append phase %v with error %v", secondaryLocation.ServerAddress, phase, err)
+		}
+	} else if phase == AppendNullify {
+		_, err = client.ForwardAppendChunkNullify(ctx, forwardAppendRequest)
 		if err != nil {
 			log.Fatalf("Failed to append to %s in append phase %v with error %v", secondaryLocation.ServerAddress, phase, err)
 			return fmt.Errorf("failed to append to %s in append phase %v with error %v", secondaryLocation.ServerAddress, phase, err)

@@ -11,6 +11,7 @@ service ChunkService {
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
     rpc ForwardAppendChunkPhaseOne (ForwardAppendRequest) returns (ForwardWriteResponse);
     rpc ForwardAppendChunkPhaseTwo (ForwardAppendRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkNullify (ForwardAppendRequest) returns (ForwardWriteResponse);
     rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
 }
 

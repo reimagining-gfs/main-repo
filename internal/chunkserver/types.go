@@ -45,7 +45,8 @@ type ChunkServer struct {
 	isRunning      bool
 
 	// Append request state
-	idempotencyIdStatusMap map[string]AppendStatus
+	idempotencyIdStatusMap     map[string]AppendStatus
+	idempotencyIdStatusMapLock sync.RWMutex
 
 	chunkPrimary map[string]bool
 
