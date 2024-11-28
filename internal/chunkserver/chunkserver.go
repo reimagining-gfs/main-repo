@@ -37,19 +37,20 @@ func NewChunkServer(serverID, address string, config *Config) (*ChunkServer, err
 	grpcServer := grpc.NewServer()
 
 	cs := &ChunkServer{
-		serverID:       serverID,
-		address:        address,
-		config:         config,
-		dataDir:        config.Server.DataDir,
-		serverDir:      serverDir,
-		chunks:         make(map[string]*ChunkMetadata),
-		leases:         make(map[string]time.Time),
-		masterClient:   chunk_pb.NewChunkMasterServiceClient(conn),
-		heartbeatStop:  make(chan struct{}),
-		chunkPrimary:   make(map[string]bool),
-		pendingData:    make(map[string]map[string]*PendingData),
-		grpcServer:     grpcServer,
-		operationQueue: NewOperationQueue(),
+		serverID:               serverID,
+		address:                address,
+		config:                 config,
+		dataDir:                config.Server.DataDir,
+		serverDir:              serverDir,
+		chunks:                 make(map[string]*ChunkMetadata),
+		leases:                 make(map[string]time.Time),
+		masterClient:           chunk_pb.NewChunkMasterServiceClient(conn),
+		heartbeatStop:          make(chan struct{}),
+		chunkPrimary:           make(map[string]bool),
+		pendingData:            make(map[string]map[string]*PendingData),
+		grpcServer:             grpcServer,
+		idempotencyIdStatusMap: make(map[string]AppendStatus),
+		operationQueue:         NewOperationQueue(),
 	}
 
 	chunk_ops.RegisterChunkOperationServiceServer(cs.grpcServer, cs)

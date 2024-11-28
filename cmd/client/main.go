@@ -264,12 +264,12 @@ func handleWrite(ctx context.Context, filename string, offset int64, content str
 
 func handleAppend(ctx context.Context, filename, content string) {
 	data := []byte(content)
-	append_offset, err := gfsClient.Append(ctx, filename, data)
+	append_offset, idemp_id, err := gfsClient.Append(ctx, filename, data)
 	if err != nil {
 		color.Red("Failed to append to file: %v", err)
 		return
 	}
-	color.Green("Successfully appended data at offset %d", append_offset)
+	color.Green("Successfully appended data at offset %d using idempotency ID <%v>", append_offset, idemp_id)
 }
 
 func handleWriteFile(ctx context.Context, gfsFilename string, offset int64, localFilepath string) {

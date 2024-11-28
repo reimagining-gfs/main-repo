@@ -274,14 +274,15 @@ func (cs *ChunkServer) WriteChunk(ctx context.Context, req *chunk_ops.WriteChunk
 
 func (cs *ChunkServer) RecordAppendChunk(ctx context.Context, req *chunk_ops.RecordAppendChunkRequest) (*chunk_ops.RecordAppendChunkResponse, error) {
 	operation := &Operation{
-		OperationId:  req.OperationId,
-		Type:         OpAppend,
-		ChunkHandle:  req.ChunkHandle.Handle,
-		Offset:       0,
-		Data:         cs.getPendingData(req.OperationId, req.ChunkHandle.Handle),
-		Checksum:     cs.getPendingDataOffset(req.OperationId, req.ChunkHandle.Handle),
-		Secondaries:  req.Secondaries,
-		ResponseChan: make(chan OperationResult, 1),
+		OperationId:      req.OperationId,
+		IdempotentencyId: req.IdempotentencyId,
+		Type:             OpAppend,
+		ChunkHandle:      req.ChunkHandle.Handle,
+		Offset:           0,
+		Data:             cs.getPendingData(req.OperationId, req.ChunkHandle.Handle),
+		Checksum:         cs.getPendingDataOffset(req.OperationId, req.ChunkHandle.Handle),
+		Secondaries:      req.Secondaries,
+		ResponseChan:     make(chan OperationResult, 1),
 	}
 
 	cs.operationQueue.Push(operation)
@@ -425,15 +426,28 @@ func (cs *ChunkServer) forwardWriteToSecondary(ctx context.Context, secondaryLoc
 	return nil
 }
 
-func (cs *ChunkServer) ForwardAppendChunkPhaseOne(ctx context.Context, req *chunkserver_pb.ForwardWriteRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
+func (cs *ChunkServer) ForwardAppendChunkPhaseOne(ctx context.Context, req *chunkserver_pb.ForwardAppendRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
 	actualData := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
 	nullData := make([]byte, len(actualData))
-	return cs.ForwardWriteChunkImpl(ctx, req, nullData)
+	correspondingWriteRequest := &chunkserver_pb.ForwardWriteRequest{
+		OperationId: req.OperationId,
+		ChunkHandle: req.ChunkHandle,
+		Offset:      req.Offset,
+		Version:     req.Version,
+	}
+
+	return cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, nullData)
 }
 
-func (cs *ChunkServer) ForwardAppendChunkPhaseTwo(ctx context.Context, req *chunkserver_pb.ForwardWriteRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
+func (cs *ChunkServer) ForwardAppendChunkPhaseTwo(ctx context.Context, req *chunkserver_pb.ForwardAppendRequest) (*chunkserver_pb.ForwardWriteResponse, error) {
 	data := cs.getPendingData(req.OperationId, req.ChunkHandle.Handle)
-	return cs.ForwardWriteChunkImpl(ctx, req, data)
+	correspondingWriteRequest := &chunkserver_pb.ForwardWriteRequest{
+		OperationId: req.OperationId,
+		ChunkHandle: req.ChunkHandle,
+		Offset:      req.Offset,
+		Version:     req.Version,
+	}
+	return cs.ForwardWriteChunkImpl(ctx, correspondingWriteRequest, data)
 }
 
 func (cs *ChunkServer) forwardAppendToSecondary(ctx context.Context, secondaryLocation *common_pb.ChunkLocation, operation *Operation, appendOffset int64, phase AppendPhaseType) error {
@@ -445,11 +459,12 @@ func (cs *ChunkServer) forwardAppendToSecondary(ctx context.Context, secondaryLo
 
 	client := chunkserver_pb.NewChunkServiceClient(conn)
 
-	forwardAppendRequest := &chunkserver_pb.ForwardWriteRequest{
-		OperationId: operation.OperationId,
-		ChunkHandle: &common_pb.ChunkHandle{Handle: operation.ChunkHandle},
-		Offset:      appendOffset,
-		Version:     cs.chunks[operation.ChunkHandle].Version,
+	forwardAppendRequest := &chunkserver_pb.ForwardAppendRequest{
+		OperationId:      operation.OperationId,
+		IdempotentencyId: operation.IdempotentencyId,
+		ChunkHandle:      &common_pb.ChunkHandle{Handle: operation.ChunkHandle},
+		Offset:           appendOffset,
+		Version:          cs.chunks[operation.ChunkHandle].Version,
 	}
 
 	if phase == AppendPhaseOne || phase == AppendNullify {
@@ -573,8 +588,17 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
+	// Check if the append is already done
+	if cs.idempotencyIdStatusMap[operation.IdempotentencyId] == AppendCompleted {
+		return -1, fmt.Errorf("data for idempotency ID %v has already been appended", operation.IdempotentencyId)
+	}
+
+	// Add that the operation has been received
+	cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendReceived
+
 	data := cs.getPendingData(operation.OperationId, operation.ChunkHandle)
 	if data == nil {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("data not found in pending storage for operation ID %s", operation.OperationId)
 	}
 
@@ -583,6 +607,7 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 
 	file, err := os.OpenFile(chunkPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("failed to open chunk file: %w", err)
 	}
 	defer file.Close()
@@ -590,6 +615,7 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 	// Get current file size
 	fileInfo, err := file.Stat()
 	if err != nil {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("failed to get file info: %w", err)
 	}
 
@@ -597,6 +623,7 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 
 	if appendOffset+int64(len(data)) >= cs.config.Storage.MaxChunkSize {
 		// TODO: pad with the data
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("append operation exceeds maximum chunk size")
 	}
 
@@ -605,6 +632,7 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 	// 1st Phase - Ask the secondaries whether they can write this data
 	// Verify whether primary can write this null data
 	if _, err := file.WriteAt(nullBytes, appendOffset); err != nil {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("failed to write data to chunk file: %w", err)
 	}
 
@@ -652,6 +680,7 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 	}
 
 	if len(errorsInPhaseOne) > 0 {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("1st Append Phase failed -- one or more secondaries failed to process the write")
 	}
 
@@ -708,18 +737,21 @@ func (cs *ChunkServer) handleAppend(operation *Operation) (int64, error) {
 		wgNullify.Wait()
 		close(errorChanNullify)
 
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("2nd Append Phase failed -- one or more secondaries failed to process the write")
 	}
 	log.Println("Appended data to secondaries")
 
 	// Write data to primary
 	if _, err := file.WriteAt(data, appendOffset); err != nil {
+		cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendFailed
 		return -1, fmt.Errorf("failed to write data to chunk file: %w", err)
 	}
 
 	log.Println("Appended data to primary")
 	log.Println("2nd Phase of Exactly-Once Append Completed")
 
+	cs.idempotencyIdStatusMap[operation.IdempotentencyId] = AppendCompleted
 	return appendOffset, nil
 }
 

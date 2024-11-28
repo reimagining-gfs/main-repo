@@ -214,48 +214,51 @@ func (c *Client) Write(ctx context.Context, filename string, offset int64, data 
 	return totalWritten, nil
 }
 
-func (c *Client) Append(ctx context.Context, filename string, data []byte) (int64, error) {
+func (c *Client) Append(ctx context.Context, filename string, data []byte) (int64, string, error) {
 	if int64(len(data)) >= ChunkSize/4 {
-		return -1, fmt.Errorf("data (size: %v) should be less than 1/4th of chunkSize (%v)", int64(len(data)), ChunkSize)
+		return -1, "", fmt.Errorf("data (size: %v) should be less than 1/4th of chunkSize (%v)", int64(len(data)), ChunkSize)
 	}
 
 	chunkInfo, chunkIdx, err := c.GetLastChunkInfo(ctx, filename)
 	if err != nil {
-		return -1, fmt.Errorf("failed to get chunk info: %v", err)
+		return -1, "", fmt.Errorf("failed to get chunk info: %v", err)
 	}
 
 	chunkData := data
 
 	operationId, err := c.PushDataToPrimary(ctx, chunkInfo.ChunkHandle.Handle, chunkData)
 	if err != nil {
-		return -1, fmt.Errorf("failed to push append data to primary for chunk %s: %v",
+		return -1, "", fmt.Errorf("failed to push append data to primary for chunk %s: %v",
 			chunkInfo.ChunkHandle.Handle, err)
 	}
 
 	conn, err := grpc.Dial(chunkInfo.PrimaryLocation.ServerAddress, grpc.WithInsecure())
 	if err != nil {
-		return -1, fmt.Errorf("failed to connect to primary server: %v", err)
+		return -1, "", fmt.Errorf("failed to connect to primary server: %v", err)
 	}
 	defer conn.Close()
 
+	idempID := uuid.New().String() // Generate random idempotency ID
+
 	appendReq := &chunk_ops.RecordAppendChunkRequest{
-		ChunkHandle: chunkInfo.ChunkHandle,
-		Secondaries: chunkInfo.SecondaryLocations,
-		OperationId: operationId,
+		ChunkHandle:      chunkInfo.ChunkHandle,
+		Secondaries:      chunkInfo.SecondaryLocations,
+		OperationId:      operationId,
+		IdempotentencyId: idempID,
 	}
 
 	client := chunk_ops.NewChunkOperationServiceClient(conn)
 	appendResp, err := client.RecordAppendChunk(ctx, appendReq)
 	if err != nil {
-		return -1, fmt.Errorf("failed to append to chunk %s: %v",
-			chunkInfo.ChunkHandle.Handle, err)
+		return -1, "", fmt.Errorf("failed to append to chunk %s: %v; Idempotency ID: <%v>",
+			chunkInfo.ChunkHandle.Handle, err, idempID)
 	}
 
 	if appendResp.Status.Code != common_pb.Status_OK {
-		return -1, fmt.Errorf("write chunk failed: %s", appendResp.Status.Message)
+		return -1, "", fmt.Errorf("write chunk failed: %s", appendResp.Status.Message)
 	}
 
-	return appendResp.OffsetInChunk + ChunkSize*chunkIdx, nil
+	return appendResp.OffsetInChunk + ChunkSize*chunkIdx, idempID, nil
 }
 
 // Supporting types for write operations

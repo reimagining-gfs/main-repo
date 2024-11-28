@@ -9,8 +9,8 @@ import "api/proto/common/common.proto";
 service ChunkService {
     rpc PushData (stream DataChunk) returns (PushDataResponse);
     rpc ForwardWriteChunk (ForwardWriteRequest) returns (ForwardWriteResponse);
-    rpc ForwardAppendChunkPhaseOne (ForwardWriteRequest) returns (ForwardWriteResponse);
-    rpc ForwardAppendChunkPhaseTwo (ForwardWriteRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseOne (ForwardAppendRequest) returns (ForwardWriteResponse);
+    rpc ForwardAppendChunkPhaseTwo (ForwardAppendRequest) returns (ForwardWriteResponse);
     rpc ForwardReplicateChunk (ForwardReplicateChunkRequest) returns (ForwardReplicateChunkResponse);
 }
 
@@ -33,6 +33,14 @@ message ForwardWriteRequest {
     common.ChunkHandle chunk_handle = 2;
     int64 offset = 3;
     int32 version = 4;
+}
+
+message ForwardAppendRequest {
+    string operation_id = 1;
+    string idempotentency_id = 2;
+    common.ChunkHandle chunk_handle = 3;
+    int64 offset = 4;
+    int32 version = 5;
 }
 
 message ForwardWriteResponse {

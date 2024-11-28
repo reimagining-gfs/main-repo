@@ -119,7 +119,6 @@ Note that the structure followed is according to a common go project pattern men
    - Link: [The Google File System](https://research.google/pubs/archive/51.pdf)
    - Summary: This paper introduces the foundational concepts of GFS, which inspired this project. Key features include chunk-based storage, master-based metadata management, and replication for fault tolerance.
 
-
 ### Technical Blogs and Tutorials
 
 1. **MIT Lecture Notes on GFS**

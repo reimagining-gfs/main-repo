@@ -44,6 +44,9 @@ type ChunkServer struct {
 	availableSpace int64
 	isRunning      bool
 
+	// Append request state
+	idempotencyIdStatusMap map[string]AppendStatus
+
 	chunkPrimary map[string]bool
 
 	pendingData     map[string]map[string]*PendingData // operationID -> chunkHandle -> data
@@ -56,14 +59,15 @@ type ChunkServer struct {
 }
 
 type Operation struct {
-	OperationId  string
-	Type         OperationType
-	ChunkHandle  string
-	Offset       int64
-	Data         []byte
-	Checksum     uint32
-	Secondaries  []*common_pb.ChunkLocation
-	ResponseChan chan OperationResult
+	OperationId      string
+	IdempotentencyId string
+	Type             OperationType
+	ChunkHandle      string
+	Offset           int64
+	Data             []byte
+	Checksum         uint32
+	Secondaries      []*common_pb.ChunkLocation
+	ResponseChan     chan OperationResult
 }
 
 type OperationType int
@@ -81,6 +85,15 @@ const (
 	AppendPhaseOne AppendPhaseType = iota
 	AppendPhaseTwo
 	AppendNullify
+)
+
+type AppendStatus int
+
+// [TODO] Make different phases completion messages (future work)
+const (
+	AppendReceived AppendStatus = iota
+	AppendCompleted
+	AppendFailed
 )
 
 type OperationResult struct {

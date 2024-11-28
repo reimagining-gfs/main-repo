@@ -36,8 +36,9 @@ message ReadChunkResponse {
 
 message RecordAppendChunkRequest {
     string operation_id = 1;
-    common.ChunkHandle chunk_handle = 2;
-    repeated common.ChunkLocation secondaries = 3;
+    string idempotentency_id = 2;
+    common.ChunkHandle chunk_handle = 3;
+    repeated common.ChunkLocation secondaries = 4;
 }
 
 message RecordAppendChunkResponse {
