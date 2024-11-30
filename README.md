@@ -1,6 +1,6 @@
 # GFS Implementation
 
-A code repository that implements the GFS with the change that appends are now exactly-once mutations.
+A code repository that implements the GFS with the change that appends are now exactly-once mutations. The corresponding report is available in [here](report.pdf).
 
 ---
 
@@ -21,7 +21,7 @@ A code repository that implements the GFS with the change that appends are now e
 
 This project is a localized implementation of the Google File System (GFS) including functionalities such as read and write handling, replication, chunk handling, etc. and the salient addition of exactly-once record-append semantics.
 
-Please refer to our detailed technical document for analysis and design choices (**TODO**: Add link).
+Please refer to our detailed technical document for analysis and design choices [here](report.pdf).
 
 Code documentation is available in the `/docs` directory.
 
